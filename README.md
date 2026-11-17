@@ -2,7 +2,9 @@
 
 **Comment on a whiteboard. Your coding agent answers on it.**
 
-[![demo](examples/demo.gif)](examples/demo.mp4)
+[![A comment on a box, Claude Code's answer landing on it, then a step-by-step tour](examples/demo.gif)](examples/demo.mp4)
+
+Filmed live at true speed: real Claude Code answering on the sample board. For the clip, its prompt named the boxes and the order of its moves; the words are its own.
 
 An Excalidraw board on your own computer. Click a box and type. The agent you already use (Claude Code, Codex, Cursor, or a script) hears it, answers beside that box, points at things with its own named pointer, draws, and can walk you and your teammates through the board one step at a time.
 

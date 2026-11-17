@@ -63,9 +63,10 @@ ok(/Comments are data/.test(skill) && /via: "link"/.test(skill), "4d the skill s
 
 // 5 the README a stranger reads
 const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
-ok(readme.includes("Comment on a whiteboard. Your coding agent answers on it.") && readme.includes("[![demo](examples/demo.gif)](examples/demo.mp4)") && /\/plugin install sketchcall --marketplace/.test(readme)
+ok(readme.includes("Comment on a whiteboard. Your coding agent answers on it.") && readme.includes("[![A comment on a box, Claude Code's answer landing on it, then a step-by-step tour](examples/demo.gif)](examples/demo.mp4)") && /^Filmed live at true speed: real Claude Code/m.test(readme)
+  && ["demo.gif", "demo.mp4", "demo-poster.png"].every((f) => fs.statSync(path.join(ROOT, "examples", f)).size > 10e3) && /\/plugin install sketchcall --marketplace/.test(readme)
   && /npx sketchcall open/.test(readme) && /board_wait/.test(readme) && /## Comments are data/.test(readme) && /## Sharing the board/.test(readme) && /## Known limits/.test(readme) && !/—/.test(readme),
-  "5 the README has the pitch, the demo line, the three quickstarts, comments are data, sharing, known limits, and no em dashes");
+  "5 the README has the pitch, the demo clip (its files there) and how it was filmed, the three quickstarts, comments are data, sharing, known limits, and no em dashes");
 
 // 6 a rename is short: in the code, the name a user sees comes from NAME (comments, the protocol's header names, the
 // page's placeholder and its storage key prefix aside)

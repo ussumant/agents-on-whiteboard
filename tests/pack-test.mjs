@@ -16,6 +16,7 @@ const extra = files.filter((f) => !ALLOWED.includes(f));
 const missing = ALLOWED.filter((f) => f !== "README.md" && !files.includes(f));
 ok(!extra.length && !missing.length, `1 npm pack lists only the package files (${files.join(", ")})${extra.length ? ` extra: ${extra}` : ""}${missing.length ? ` missing: ${missing}` : ""}`);
 ok(!files.some((f) => f.startsWith("tests/")), "1b tests stay out of the package");
+ok(!files.some((f) => /^examples\/demo/.test(f)), `1c the demo clip (examples/demo*) stays out of the package (${files.filter((f) => f.startsWith("examples/")).join(", ")})`);
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
 ok(!pkg.dependencies || !Object.keys(pkg.dependencies).length, "2 no runtime dependencies");
