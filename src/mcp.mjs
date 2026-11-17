@@ -46,22 +46,28 @@ export function runMcp({ channels = false } = {}) {
   };
 
   // From board_open on, each board's events (comments, answers on this session's tours, canvas writing) are queued for
-  // board_wait, and pushed as channel messages when --channels is on. A queue keeps the oldest 500.
-  const queues = new Map(), waiters = new Map();   // dir → events; dir → the board_wait calls waiting on it
+  // board_wait, and pushed as channel messages when --channels is on. Two queues: this computer's is never trimmed (the
+  // record's own cap bounds it), and board_wait empties it first; the share link's keeps its newest 500, and the next result
+  // says how many older ones it dropped (dropped_guest_comments). A guest's flood can't push out the owner's comment.
+  const queues = new Map(), waiters = new Map();   // dir → {home, link, dropped}; dir → the board_wait calls waiting on it
   function watch(dir) {
-    queues.set(dir, []); waiters.set(dir, new Set());
+    queues.set(dir, { home: [], link: [], dropped: 0 }); waiters.set(dir, new Set());
     follow(dir, ev => {
       if (channels) push(ev);
       const w = [...waiters.get(dir)][0];
-      if (w) w(ev); else { const q = queues.get(dir); q.push(ev); if (q.length > 500) q.shift(); }
+      if (w) return w(ev);
+      const q = queues.get(dir);
+      if (ev.meta.via === 'link') { q.link.push(ev); if (q.link.length > 500) { q.link.shift(); q.dropped++; } } else q.home.push(ev);
     }, { me: () => me(dir) });
   }
-  // board_wait: the oldest queued event, or the next one, or {timeout: true}. With a progressToken, a progress
-  // notification every 20 s while it waits (clients drop a call that stays quiet too long). A cancelled call stops waiting.
+  // board_wait: the oldest queued event (this computer's first), or the next one, or {timeout: true}. With a
+  // progressToken, a progress notification every 20 s while it waits (clients drop a call that stays quiet too long). A
+  // cancelled call stops waiting.
   const cancels = new Map();   // request id → stop
   function boardWait(d, timeoutS, { progressToken, requestId }) {
     const q = queues.get(d);
-    if (q.length) return Promise.resolve(flatEvent(q.shift()));
+    const next = q.home.length ? q.home.shift() : q.link.length ? q.link.shift() : null;
+    if (next) { const dropped = q.dropped; q.dropped = 0; return Promise.resolve({ ...flatEvent(next), ...(dropped ? { dropped_guest_comments: dropped } : {}) }); }
     return new Promise(resolve => {
       const t0 = Date.now(); let n = 0;
       const done = v => { clearTimeout(timer); clearInterval(tick); waiters.get(d).delete(take); cancels.delete(requestId); resolve(v); };
@@ -121,7 +127,7 @@ export function runMcp({ channels = false } = {}) {
       { index: n, tour_id: s, ...dirArg }, ['index'], a => { const d = dirOf(a); return { ...tourStep(d, a.index, a.tour_id, me(d)), where: tourWhere(d) }; }],
     ['board_point', 'Glide your pointer (named after your presenter name) to a box (or a scene point {x,y}) on every open page and say `text` in a cursor-chat bubble beside it. Use it to gesture while answering a comment: one box, one short sentence. Another session\'s tour keeps going: your pointer shows beside theirs.',
       { target, text: s, ...dirArg }, ['target', 'text'], a => { const d = dirOf(a); return point(d, a.target, a.text, me(d)); }],
-    ['board_wait', `Wait for the person's next comment, their answer on one of your tour steps, or text someone writes on the canvas, and return it as JSON (the same as \`${NAME} wait\`): {id, kind: "comment" | "answer" | "board", content, author, via, box_id, box_label, …}. Answer a comment with board_say reply_to=<its id>, then call board_wait again. After timeout_s seconds (default 50) with nothing new it returns {timeout: true}: call it again. Nothing is lost between calls: events queue from board_open on. Your own replies, your own note and edit text, and tour moves never come back.${channels ? ' With channel messages on, the same events also arrive as <channel> messages; use one or the other.' : ''}`,
+    ['board_wait', `Wait for the person's next comment, their answer on one of your tour steps, or text someone writes on the canvas, and return it as JSON (the same as \`${NAME} wait\`): {id, kind: "comment" | "answer" | "board", content, author, via, box_id, box_label, …}. Answer a comment with board_say reply_to=<its id>, then call board_wait again. After timeout_s seconds (default 50) with nothing new it returns {timeout: true}: call it again. Events queue from board_open on, and the person's own (from this computer) always come first and are never dropped. Under a flood through the share link, only the newest 500 link events are kept, and the next result says how many older ones were dropped (dropped_guest_comments); board_thread still has them. Your own replies, your own note and edit text, and tour moves never come back.${channels ? ' With channel messages on, the same events also arrive as <channel> messages; use one or the other.' : ''}`,
       { timeout_s: { ...n, description: 'seconds to wait, 1–3600; default 50' }, ...dirArg }, [], (a, ctx) => {
         const d = dirOf(a), t = a.timeout_s ?? 50;
         if (!Number.isFinite(t) || t < 1 || t > 3600) throw new Error('timeout_s is a number of seconds from 1 to 3600');

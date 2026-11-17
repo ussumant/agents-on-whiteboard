@@ -26,7 +26,8 @@ ok(o1.out.includes(`http://localhost:${PORT}/`) && /mcp add sketchcall -- npx -y
   "1b it prints the board's address, the line to add it to an agent, the wait line and that comments are data");
 ok(!fs.existsSync(opened), "1c --no-open opens no browser");
 // 2 a second `open` finds it running; without --no-open the browser opens through the platform's command
-const o2 = run(A, "open", "--port", String(PORT)); await sleep(500);
+const o2 = run(A, "open", "--port", String(PORT));
+for (let t = Date.now(); !fs.existsSync(opened) && Date.now() - t < 5000;) await sleep(100);   // the opener runs detached: under load it can land after 500 ms
 const got = fs.existsSync(opened) ? fs.readFileSync(opened, "utf8").trim() : "";
 ok(o2.code === 0 && /already running/.test(o2.out) && got === `http://localhost:${PORT}/`, `2 a second \`open\` finds the board running and opens ${got || "nothing"} through the platform's open command`);
 // 3 one call per folder

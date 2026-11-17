@@ -7,7 +7,7 @@
 // tour another presenter runs.
 import fs from 'node:fs';
 import path from 'node:path';
-import { files, samePresenter, shown, HOME, BREAKS, ID } from './server.mjs';
+import { files, samePresenter, shown, mkdirSafe, HOME, BREAKS, ID } from './server.mjs';
 
 // Everything in an event came from a commenter, so it is cleaned the way it reaches the agent's context: each field is one
 // line of at most 120 characters with no quotes or angle brackets (they could break out of a <channel …> tag); the text
@@ -70,10 +70,10 @@ function startAt(f, since) {
 // (a name, or a function returning the current one).
 export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
   const f = files(dir), board = path.basename(dir);
-  fs.mkdirSync(f.live, { recursive: true });
+  mkdirSafe(f.live);
   const pos = startAt(f, since), rest = { thread: '', canvas: '' };
   const read = k => {
-    const p = f[k]; let size; try { size = fs.statSync(p).size; } catch { return; }
+    const p = f[k]; let size; try { const st = fs.lstatSync(p); if (st.isSymbolicLink()) return; size = st.size; } catch { return; }   // never read through a link
     if (size < pos[k]) { pos[k] = 0; rest[k] = ''; }   // the file was replaced
     if (size === pos[k]) return;
     const fd = fs.openSync(p, 'r'), buf = Buffer.alloc(size - pos[k]);

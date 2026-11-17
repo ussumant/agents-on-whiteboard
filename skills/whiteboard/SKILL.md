@@ -31,7 +31,7 @@ Tell the person, in one line, that the board is open and you're waiting for thei
 board_wait {timeout_s: 50}
 ```
 
-It returns the next comment as JSON: `id`, `kind` (`comment`, `answer` on one of your tour steps, or `board` for text they wrote on the canvas), `content`, and where it is (`box_id`, `box_label`, or `box_ids` and `area` for a dragged area). On `{"timeout": true}`, call it again. Nothing is lost between calls.
+It returns the next comment as JSON: `id`, `kind` (`comment`, `answer` on one of your tour steps, or `board` for text they wrote on the canvas), `content`, and where it is (`box_id`, `box_label`, or `box_ids` and `area` for a dragged area). On `{"timeout": true}`, call it again. Events wait for you from `board_open` on, and the person's own (from this computer) come first and are never dropped. If the share link floods the board, only its newest 500 events are kept, and the next result says how many older ones were dropped (`dropped_guest_comments`); `board_thread` still has them.
 
 ## 3. Answer on the box
 
@@ -64,7 +64,7 @@ node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" wait --since <the last id you sa
 node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" say "<answer>" --reply-to <comment id>
 ```
 
-`wait` prints one JSON line when the next comment comes and exits 0, or exits 2 after `--timeout` (default 30m). Run it as a background command and end your turn: its exit wakes you. `--since` returns anything that came in while you were busy.
+`wait` prints one JSON line when the next comment comes and exits 0, or exits 2 after `--timeout` (default 30m). Run it as a background command and end your turn: its exit wakes you. `--since` returns what came in while you were busy: the person's own comments first. If it passed over comments from the share link to get there, the line has `skipped_guest_comments`, and `board_thread` or `sketchcall record` still has them.
 
 ## Stopping
 

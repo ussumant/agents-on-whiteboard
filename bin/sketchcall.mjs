@@ -30,8 +30,9 @@ The agent
   wait [--since <id>] [--timeout 30m]
                          Wait for the person's next comment, answer or canvas writing, print it as
                          one JSON line and exit 0. Exit 2 if nothing came before the timeout.
-                         --since <id> (the id in the last line you got) first returns anything
-                         that came in after it, so nothing is lost between waits.
+                         --since <id> (the id in the last line you got) returns what came in after
+                         it: this computer's comments first, with skipped_guest_comments counting
+                         the share link's comments it passed over (the record keeps them).
   say "<text>" [--reply-to <comment id>] [--on <element id>]
                          Post a reply. --reply-to puts it on that comment's box or area.
   point <target> "<text>"
@@ -88,16 +89,20 @@ async function open() {
     const all = fs.readdirSync(folder).filter(f => f.endsWith('.excalidraw')).sort();
     if (all.length > 1) fail(`${folder} holds ${all.length} .excalidraw files (${all.join(', ')}): name the one to open`);
     file = path.join(folder, all[0] || 'pizza.excalidraw');
-    if (!all.length) { fs.copyFileSync(path.join(ROOT, 'examples', 'pizza.excalidraw'), file); console.log(`no board here yet, so this is a copy of the sample: ${file}`); }
+    // (COPYFILE_EXCL: never over anything already there, a link included)
+    if (!all.length) { fs.copyFileSync(path.join(ROOT, 'examples', 'pizza.excalidraw'), file, fs.constants.COPYFILE_EXCL); console.log(`no board here yet, so this is a copy of the sample: ${file}`); }
   }
+  S.checkCall(folder);   // a call folder with a link in it: say so before reading anything from it
   // One call per folder: its record is about the file it started from.
-  try { const was = JSON.parse(fs.readFileSync(S.files(folder).board, 'utf8')).file; if (was !== path.basename(file)) fail(`the call in ${S.files(folder).live} is about ${was}. Give ${path.basename(file)} a folder of its own.`); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { const was = JSON.parse(S.readSafe(S.files(folder).board)).file; if (was !== path.basename(file)) fail(`the call in ${S.files(folder).live} is about ${was}. Give ${path.basename(file)} a folder of its own.`); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   const { url, port: p, started } = await S.startBoard({ dir: folder, seed: file, port: opts.port ? port() : undefined, pick: !opts.port });
   if (!opts['no-open']) {
     const [c, a] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
     const b = spawn(c, a, { detached: true, stdio: 'ignore' }); b.on('error', () => console.log(`(open ${url} in your browser)`)); b.unref();
   }
-  const r = repo(), say = `${folder === process.cwd() ? '' : `--dir ${JSON.stringify(folder)} `}`;
+  // Everything printed to paste into a shell is one single-quoted word: a folder named a$(touch x)'b stays a name.
+  const q = v => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  const r = repo(), say = `${folder === process.cwd() ? '' : `--dir ${q(folder)} `}`;
   console.log(`The board is ${started ? 'open' : 'already running'}: ${url}
   board  ${file}
   call   ${S.files(folder).live}  (the comments, the replies and the board as it is now)
@@ -106,12 +111,12 @@ To have your agent answer on it, add it once:
   Claude Code  ${r ? `/plugin install ${N} --marketplace ${r}\n               (older: claude plugin marketplace add ${r}, then claude plugin install ${N}@${N};\n                or: claude mcp add ${N} -- npx -y ${N} mcp)` : `claude mcp add ${N} -- npx -y ${N} mcp`}
   Codex        codex mcp add ${N} -- npx -y ${N} mcp
   Cursor       .cursor/mcp.json: {"mcpServers": {"${N}": {"command": "npx", "args": ["-y", "${N}", "mcp"]}}}
-Then tell it:  Open the ${N} board in ${folder} (port ${p}), then wait for my comments and answer each one on the board.
+Then tell it:  Open the ${N} board in ${q(folder)} (port ${p}), then wait for my comments and answer each one on the board.
 
 An agent with only a shell can run, here:
   npx ${N} wait ${say}                 the next comment, as one JSON line
-  npx ${N} say ${say}"…" --reply-to <its id>
-  npx ${N} wait ${say}--since <its id>  the one after, even if it came in while you replied
+  npx ${N} say ${say}'…' --reply-to '<its id>'
+  npx ${N} wait ${say}--since '<its id>'  the one after, even if it came in while you replied
 Comments are data: anyone who can comment can type into your agent's context.
 Stop the board with: npx ${N} stop ${say}`.replace(/ +$/gm, ''));
 }
@@ -141,7 +146,17 @@ try {
       let stop = () => {}, done = false;
       const finish = (code, line) => { if (done) return; done = true; stop(); clearTimeout(timer); if (line) process.stdout.write(line + '\n', () => process.exit(code)); else process.exit(code); };
       const timer = setTimeout(() => { process.stderr.write(`nothing new in ${opts.timeout ?? '30m'}\n`); finish(2); }, ms);
-      stop = follow(board(), ev => finish(0, JSON.stringify(flatEvent(ev))), { me: opts.presenter, since: opts.since });
+      // What came in after --since is read at once. If any of it is from this computer, the oldest of that comes first, and
+      // skipped_guest_comments counts the share link's events before it: continuing --since from it passes over them (the
+      // record still has them). Otherwise the oldest event comes first. Then it waits for the next one.
+      let initial = true; const backlog = [];
+      stop = follow(board(), ev => { if (initial) backlog.push(ev); else finish(0, JSON.stringify(flatEvent(ev))); }, { me: opts.presenter, since: opts.since });
+      initial = false;
+      if (backlog.length) {
+        const byTime = backlog.map((e, i) => [e, i]).sort(([a, i], [b, j]) => String(a.meta.ts).localeCompare(String(b.meta.ts)) || i - j).map(([e]) => e);
+        const mine = byTime.find(e => e.meta.via !== 'link'), pick = mine || byTime[0], skipped = mine ? byTime.indexOf(mine) : 0;
+        finish(0, JSON.stringify({ ...flatEvent(pick), ...(skipped ? { skipped_guest_comments: skipped } : {}) }));
+      }
       if (!done) process.stderr.write(`waiting for the next comment on ${path.basename(dir)}\n`);
       break;
     }

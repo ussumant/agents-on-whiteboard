@@ -603,7 +603,11 @@ const live = (() => {
   // A link is kept only as an absolute http(s) address with nothing hidden in it (no entities, control, space or
   // zero-width characters), the same rule as the server's: Excalidraw opens a link that starts // in this tab.
   const linkOk = (l) => typeof l === "string" && l.length <= 2000 && !/[\p{Cc}\p{Cf}\p{Z}\s]|&[#\w]+;/u.test(l)
-    && (() => { try { const u = new URL(l); return (u.protocol === "https:" || u.protocol === "http:") && l.toLowerCase().startsWith(`${u.protocol}//`); } catch (e) { return false; } })();
+    && (() => { try { const u = new URL(l); return (u.protocol === "https:" || u.protocol === "http:") && l.toLowerCase().startsWith(`${u.protocol}//`) && !u.username && !u.password; } catch (e) { return false; } })();
+  // A hatched, cross-hatched or zigzag fill past 2,000 × 2,000 is drawn solid, and with a stroke of at least 1 below it, as
+  // on the server: its drawing time grows with size over stroke, and 200 big ones froze the page.
+  const HATCH = new Set(["hachure", "cross-hatch", "zigzag"]);
+  const unhatched = (x) => !HATCH.has(x.fillStyle) ? x : (x.width > 2000 || x.height > 2000) ? { ...x, fillStyle: "solid" } : x.strokeWidth < 1 ? { ...x, strokeWidth: 1 } : x;
   const shapeOk = (e) => !!e && typeof e === "object" && typeof e.id === "string" && SHAPES.has(e.type) && e.containerId !== e.id && sized(e)
     && (e.boundElements == null || (Array.isArray(e.boundElements) && e.boundElements.every((b) => b && typeof b.id === "string")))
     && (e.groupIds == null || (Array.isArray(e.groupIds) && e.groupIds.every((g) => typeof g === "string")))
@@ -613,7 +617,7 @@ const live = (() => {
     const out = [];
     for (const e of Array.isArray(list) ? list : []) {
       if (!shapeOk(e)) continue;
-      try { const [x] = ExcalidrawLib.restoreElements([e], null); if (x && shapeOk(x)) out.push(x.link != null && !linkOk(x.link) ? { ...x, link: null } : x); } catch (err) { /* left out */ }
+      try { const [x] = ExcalidrawLib.restoreElements([e], null); if (x && shapeOk(x)) out.push(unhatched(x.link != null && !linkOk(x.link) ? { ...x, link: null } : x)); } catch (err) { /* left out */ }
     }
     return out;
   }
@@ -1812,6 +1816,9 @@ async function start() {
         onPointerUpdate: live.pointer,
         excalidrawAPI: onExcalidrawAPI,
         validateEmbeddable: () => false,   // no embeds: any website, or a tweet's script, inside the board
+        // Every link opens in a new tab, cut off from this one. Excalidraw opened a link in this tab when it merely contained
+        // the board's own address ("http://evil.test/?u=http://localhost:4900"), so a click could replace the board.
+        onLinkOpen: (el, event) => { event.preventDefault(); const l = el && el.link; if (typeof l === "string" && /^https?:\/\//i.test(l)) window.open(l, "_blank", "noopener,noreferrer"); },
         theme: "light",
       })
     )
