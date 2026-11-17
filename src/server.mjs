@@ -347,20 +347,23 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const KEYS = { home: crypto.randomBytes(18).toString('base64url'), link: crypto.randomBytes(18).toString('base64url') };
   // Each page served gets its own page id and a secret that goes with it, issued here and never sent to anyone else. The
   // id is how the room knows a page (other pages see it); the secret is what lets a call act as that page, so a guest who
-  // learns the owner's page id from the room still can't post, point, leave or rename as it. At most 1,000 pages are
-  // remembered (the least recently heard from go first); a page the server forgot asks to be reloaded.
-  const pages = new Map();   // page id → { secret, far }
+  // learns the owner's page id from the room still can't post, point, leave or rename as it. Each side keeps its own 500
+  // (the least recently heard from go first), so page loads through the link can only push out link pages, and the link
+  // gets at most 60 new pages a minute. A page the server forgot asks to be reloaded.
+  const pages = { home: new Map(), link: new Map() }, minted = [];   // page id → secret; when the link last minted pages
   const issue = far => {
+    const side = far ? pages.link : pages.home, t = Date.now();
+    if (far) { while (minted.length && t - minted[0] > 60000) minted.shift(); if (minted.length >= 60) return null; minted.push(t); }
     const c = crypto.randomBytes(9).toString('base64url'), secret = crypto.randomBytes(18).toString('base64url');
-    pages.set(c, { secret, far }); if (pages.size > 1000) pages.delete(pages.keys().next().value);
+    side.set(c, secret); if (side.size > 500) side.delete(side.keys().next().value);
     return { page: c, pageKey: secret };
   };
   const pageOk = (req, c, far) => {
-    const p = typeof c === 'string' && pages.get(c);
-    if (!p || p.far !== far || !same(req.headers['x-sketchcall-page'] || '', p.secret)) return false;
-    pages.delete(c); pages.set(c, p); return true;   // most recently heard from
+    const side = far ? pages.link : pages.home, secret = typeof c === 'string' && side.get(c);
+    if (!secret || !same(req.headers['x-sketchcall-page'] || '', secret)) return false;
+    side.delete(c); side.set(c, secret); return true;   // most recently heard from
   };
-  const page = far => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home, ...issue(far) }).replace(/</g, '\\u003c'));
+  const page = (far, ids) => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home, ...ids }).replace(/</g, '\\u003c'));
   // Element ids a page may send: id-shaped ones, or an odd one the board's own file already has.
   const known = id => ID.test(id) || els.has(id);
   // A label bound to a box or arrow can get a fresh random id when a browser rebuilds it, so key it by its container:
@@ -480,8 +483,11 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         if (!same(req.headers['x-sketchcall-key'] || '', far ? KEYS.link : KEYS.home)) return send(res, 403, { error: 'no board key, or an old one: reload the page' });
         if (req.method !== 'GET' && !/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'send JSON (content-type: application/json)' });
       }
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html'))
-        return send(res, 200, page(far), 'text/html; charset=utf-8', head);
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+        const ids = issue(far);
+        if (!ids) return send(res, 429, 'Too many pages opened through this link in the last minute. Wait a minute, then reload.', 'text/plain; charset=utf-8', { 'retry-after': '60' });
+        return send(res, 200, page(far, ids), 'text/html; charset=utf-8', head);
+      }
       // A call that names a page id (c) is that page's own: its secret, and from the same side of the link it was served to.
       const notMine = c => { if (pageOk(req, c, far)) return false; send(res, 403, { error: 'not this page\'s id, or the server restarted: reload the page' }); return true; };
       if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }

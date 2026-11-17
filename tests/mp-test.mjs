@@ -1,6 +1,6 @@
 // Multiplayer gate: two headless pages (the host, nameless at this computer, and ?name=Sam) on a fresh copy of the
 // sample board, on a spare port. It edits, deletes and posts comments, so it never runs on a real board.
-//   node tests/mp-test.mjs [spare port 4900–4940]      → 34 PASS lines
+//   node tests/mp-test.mjs [spare port 4900–4940]      → 37 PASS lines
 import fs from "fs"; import puppeteer from "puppeteer";
 import { ok, sleep, cli, scratch, serveBoard, portArg, poll, until, joined, pageKey, asPage } from "./lib.mjs";
 const PORT = portArg(2, 4910), D = scratch("mp"), U = `http://localhost:${PORT}/`;
@@ -130,5 +130,53 @@ await poll(() => hasPic(A));
 ok(!!back && !!pic && await hasPic(A), "17d A still has it after a reload");
 await fetch(U + "api/comment", { method: "POST", headers: asPage(await pageKey(U), U.slice(0, -1)), body: JSON.stringify({ text: "about the picture", on: pic && { id: pic.id, label: "area: image" } }) }); await sleep(300);
 ok(/\[pictures: live\/files\/\w+\.png\]/.test(fs.readFileSync(`${D}/live/events.log`, "utf8").trim().split("\n").filter((l) => l.startsWith("COMMENT")).at(-1) || ""), "17e a comment on it names the saved file");
+// 18 what a person draws with each of Excalidraw's tools is saved and reaches the other page. The server checks every
+// element's shape by type, and a shape it wrongly refused would never save or sync, so each tool is drawn with the mouse.
+// A stroke the synthetic mouse loses (the editor still busy with the last one) is drawn again until it is on A: then a
+// shape on A that never reaches the server can only be the server refusing it.
+await A.bringToFront(); await sleep(300);
+const had = new Set(srvScene().map((e) => e.id));
+const tool = (t) => A.evaluate((t) => { __excalidrawAPI.setActiveTool({ type: t }); }, t);
+const onA = (t) => A.evaluate((t) => __excalidrawAPI.getSceneElements().filter((e) => e.type === t && (t !== "text" || e.text === "typed on the board")).map((e) => e.id), t);
+// whatever is on top where a stroke starts (a comment pin, a card): a covered start point is reported, never drawn through
+const covers = {};
+const topAt = (x, y) => A.evaluate((x, y) => { const t = document.elementFromPoint(x, y); return !t || t.classList.contains("interactive") ? null : `${t.tagName.toLowerCase()}${t.id ? "#" + t.id : ""}${typeof t.className === "string" && t.className ? "." + t.className.split(" ")[0] : ""}`; }, x, y);
+const stroke = async (t, from, to, steps = 10) => {
+  const c = await topAt(from.x, from.y); if (c) covers[t] = c;
+  await tool(t); await A.mouse.move(from.x, from.y); await A.mouse.down();
+  for (let k = 1; k <= steps; k++) await A.mouse.move(from.x + (to.x - from.x) * k / steps, from.y + (to.y - from.y) * k / steps + (t === "freedraw" ? 12 * Math.sin(k) : 0));
+  await A.mouse.up(); await sleep(250); await A.keyboard.press("Escape"); await sleep(250);
+};
+const tries = {};
+const draw = async (t, make, done = async (fresh) => fresh.length > 0) => {
+  for (let k = 1; k <= 3; k++) { const was = new Set(await onA(t)); await make(); const fresh = (await onA(t)).filter((id) => !was.has(id)); if (await done(fresh)) { tries[t] = (tries[t] || 0) + k; return fresh; }
+    await A.keyboard.press("Escape"); await sleep(500); }
+  tries[t] = "lost"; return [];
+};
+// Excalidraw shows a tool's properties down the left edge and the discussion panel takes the right, so every stroke
+// starts in the middle third. First an arrow from one box to another, so it carries both its bindings: the two boxes
+// are framed there.
+await A.evaluate((a, b) => { const api = __excalidrawAPI, els = api.getSceneElements(), p = els.find((e) => e.id === a), q = els.find((e) => e.id === b);
+  const x0 = Math.min(p.x, q.x), x1 = Math.max(p.x + p.width, q.x + q.width), y0 = Math.min(p.y, q.y), y1 = Math.max(p.y + p.height, q.y + q.height), z = Math.min(1, 480 / (x1 - x0), 500 / (y1 - y0));
+  api.updateScene({ appState: { zoom: { value: z }, scrollX: 610 / z - (x0 + x1) / 2, scrollY: 400 / z - (y0 + y1) / 2 } }); }, ids[2], ids[3]); await sleep(700);   // (ids[1] was deleted in 5)
+const centre = (id) => A.evaluate((id) => { const api = __excalidrawAPI, e = api.getSceneElements().find((x) => x.id === id); return ExcalidrawLib.sceneCoordsToViewportCoords({ sceneX: e.x + e.width / 2, sceneY: e.y + e.height / 2 }, api.getAppState()); }, id);
+const [c0, c2] = [await centre(ids[2]), await centre(ids[3])];
+const boundIds = await draw("arrow", () => stroke("arrow", c0, c2), async (fresh) => fresh.length > 0 && await A.evaluate((ids) => ids.some((id) => { const e = __excalidrawAPI.getSceneElements().find((x) => x.id === id); return e.startBinding && e.endBinding; }), fresh));
+// then an empty stretch below the board at 100%, one of each tool
+await A.evaluate(() => { const api = __excalidrawAPI, els = api.getSceneElements(), x0 = Math.min(...els.map((e) => e.x)), y0 = Math.max(...els.map((e) => e.y + e.height)) + 300;
+  api.updateScene({ appState: { zoom: { value: 1 }, scrollX: 120 - x0, scrollY: 140 - y0 } }); }); await sleep(500);
+const at = (i) => ({ x: 330 + i * 90, y: 160 });
+for (const [i, t] of ["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw"].entries()) await draw(t, () => stroke(t, at(i), { x: at(i).x + 70, y: at(i).y + 70 }));
+await draw("text", async () => { const c = await topAt(340, 330); if (c) covers.text = c; await tool("text"); await A.mouse.click(340, 330); await sleep(400); await A.keyboard.type("typed on the board"); await A.keyboard.press("Escape"); await sleep(400); });
+await draw("frame", () => stroke("frame", { x: 340, y: 420 }, { x: 760, y: 560 }));
+const want = ["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text", "frame"];
+const fresh = () => srvScene().filter((e) => !had.has(e.id) && !e.isDeleted);
+await poll(() => want.every((t) => fresh().some((e) => e.type === t)) && fresh().some((e) => boundIds.includes(e.id) && e.startBinding && e.endBinding));
+const got = fresh(), missing = want.filter((t) => !got.some((e) => e.type === t)), bound = got.find((e) => boundIds.includes(e.id) && e.startBinding && e.endBinding);
+const onB = await poll(async () => { const b = new Set((await scene(B)).map((e) => e.id)); return got.every((e) => b.has(e.id)); }) >= 0;
+ok(!missing.length && !!bound && onB && got.some((e) => e.type === "text" && e.text === "typed on the board") && !Object.values(tries).includes("lost"),
+  `18 every tool drawn with the mouse is saved and reaches B (${got.length} new: ${[...new Set(got.map((e) => e.type))].join(", ")}${missing.length ? `; missing ${missing}` : ""}; bound arrow ${!!bound}; on B ${onB}; strokes per tool ${JSON.stringify(tries)}${Object.keys(covers).length ? `; covered: ${JSON.stringify(covers)}` : ""})`);
+// 19 no console errors from start to finish: check 13 runs before the agent's arrow, the pictures and the drawing
+for (const [n, p] of [["A", A], ["B", B]]) ok(!p.errs.length, `19 no console errors in ${n} over the whole run ${JSON.stringify(p.errs.slice(0, 3))}`);
 await b.close(); srv.kill();
 console.log(`(board copy: ${D})`);

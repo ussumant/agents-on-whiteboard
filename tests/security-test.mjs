@@ -454,6 +454,11 @@ const kick = (B) => B.post("home", "/api/comment", { text: "nudge the room" }); 
   const own = json(await B.scene("home", [{ ...sub, text: "the owner's edit", originalText: "the owner's edit", version: sub.version + 1 }]));
   const noSecret = await hit(PORT2, "/api/presence", { method: "POST", host: TUNNEL, body: { c: B.guest.c, pointer: { x: 1, y: 1 } }, headers: { ...asPage(B.guest.key, `https://${TUNNEL}`), ...guestHead } });
   ok(own && own.took === 1 && noSecret.status === 403, `N5b the owner's own page still writes (took ${own && own.took}); a page id without its page's secret is refused (${noSecret.status})`);
+  // the remembered page ids can't be flooded from the link: 1,100 page loads in a few seconds don't push the owner's page out
+  let served = 0, refused = 0;
+  for (let k = 0; k < 1100; k++) { const x = await hit(PORT2, "/", { host: TUNNEL, headers: guestHead }); if (x.status === 200) served++; else refused++; }
+  const after = await B.post("home", "/api/presence", { c: B.home.c, pointer: { x: 5, y: 5 } });
+  ok(after.status === 200 && refused > 0, `N5c 1,100 page loads through the link (${served} served, ${refused} refused) leave the owner's page working (${after.status})`);
   await B.stop();
 }
 
