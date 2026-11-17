@@ -17,7 +17,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "test:pack": "node tests/pack-test.mjs"
+    "test": "node tests/pack-test.mjs && node tests/mcp-test.mjs 4915 && node tests/mp-test.mjs 4910",
+    "test:pack": "node tests/pack-test.mjs",
+    "test:mcp": "node tests/mcp-test.mjs 4915",
+    "test:mp": "node tests/mp-test.mjs 4910"
   },
   "keywords": [
     "excalidraw",
@@ -26,5 +29,8 @@
     "agent",
     "claude-code",
     "codex"
-  ]
+  ],
+  "devDependencies": {
+    "puppeteer": "24.36.0"
+  }
 }

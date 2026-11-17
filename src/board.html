@@ -1,3 +1,1742 @@
 <!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sketchcall</title>
-<p>The board page: built in step 2.</p>
+
+<script>
+/* Runs synchronously, before anything else — including the three blocking
+   <script src> tags below — so the failure surface exists even if a CDN
+   request hangs and never resolves (a hung blocking script freezes the HTML
+   parser, so nothing further down this page would run to start a watchdog of
+   its own). Single source of truth for the persistence keys. */
+(function () {
+  /* The board's name and key, put here by the server (src/server.mjs). Browser storage is keyed per board, so two boards
+     served on one port never mix. A page opened as a plain file has neither. */
+  var BOARD = "__SKETCHCALL_BOARD__";
+  if (!BOARD || typeof BOARD !== "object") BOARD = { key: "local", name: "board" };
+  window.__boardInfo = BOARD;
+  document.title = BOARD.name + " · sketchcall";
+  window.PERSISTENCE_KEY = "sketchcall:" + BOARD.key;
+  window.__BOARD_ELEMENTS_KEY = window.PERSISTENCE_KEY + ":elements";
+  window.__BOARD_APPSTATE_KEY = window.PERSISTENCE_KEY + ":appstate";
+  window.__board = { ready: false, error: null };
+
+  function paintFallback(title, message, stack) {
+    var run = function () {
+      document.getElementById("fallback").classList.add("show");
+      document.getElementById("fallbackTitle").textContent = title;
+      document.getElementById("fallbackMsg").textContent = message;
+      var details = document.getElementById("fallbackDetails");
+      var pre = document.getElementById("fallbackStack");
+      if (stack) { pre.textContent = stack; details.hidden = false; }
+      else { details.hidden = true; }
+    };
+    if (document.getElementById("fallback")) run();
+    else document.addEventListener("DOMContentLoaded", run, { once: true });
+  }
+  window.__showFallback = paintFallback;
+
+  /* One gate every failure path funnels through, so the first failure wins
+     and a later generic one (the watchdog) never clobbers a specific one. */
+  function reportFailure(title, message, stack) {
+    if (window.__board.ready || window.__board.error) return;
+    window.__board.error = message;
+    if (window.__loadWatchdog) { clearTimeout(window.__loadWatchdog); window.__loadWatchdog = null; }
+    console.error("[board]", message, stack || "");
+    paintFallback(title, message, stack || null);
+  }
+  window.__reportFailure = reportFailure;
+
+  function clearLocalDataAndReload() {
+    if (!confirm(
+      "This clears this board's saved data in THIS browser and reloads to " +
+      "the seeded board. Edits saved only here will be lost. Continue?"
+    )) return;
+    try {
+      localStorage.removeItem(window.__BOARD_ELEMENTS_KEY);
+      localStorage.removeItem(window.__BOARD_APPSTATE_KEY);
+    } catch (e) { /* best effort — reload happens regardless */ }
+    location.reload();
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    document.getElementById("fallbackReload").onclick = function () { location.reload(); };
+    document.getElementById("fallbackReset").onclick = clearLocalDataAndReload;
+  });
+
+  window.__loadWatchdog = setTimeout(function () {
+    reportFailure(
+      "The board is still loading.",
+      "Still loading after 15 seconds — likely a stalled request to unpkg.com or " +
+        "cdnjs.cloudflare.com (the board's CDNs)."
+    );
+  }, 15000);
+
+  /* Exceptions thrown after every script loaded fine (React render/commit,
+     scene rehydration from a corrupt localStorage blob) — anything that would
+     otherwise leave a silent white #root. */
+  window.addEventListener("error", function (e) {
+    reportFailure(
+      "The board hit an error while loading.",
+      (e && e.message) || "Unknown script error.",
+      e && e.error && e.error.stack ? e.error.stack : null
+    );
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason;
+    reportFailure(
+      "The board hit an error while loading.",
+      (reason && reason.message) || String(reason),
+      reason && reason.stack ? reason.stack : null
+    );
+  });
+})();
+</script>
+
+<style>
+  html, body { margin: 0; height: 100%; width: 100%; font-family: ui-sans-serif, system-ui, sans-serif; background: #ffffff; }
+  #root { position: fixed; inset: 0; right: 372px; } body.panel-closed #root { right: 0; }
+
+  /* Board chrome (walk buttons, Export, help) sits at the bottom right of
+     the canvas, beside the live panel. */
+  #chrome {
+    position: fixed; right: 436px; bottom: 14px; z-index: 1000;  /* bottom right of the canvas (the live panel sits right of it) */
+    display: flex; flex-direction: column-reverse; gap: 8px; align-items: flex-end;
+    pointer-events: none;
+  }
+  #chrome > * { pointer-events: auto; }
+  #buttons { display: flex; gap: 8px; }
+  #chrome button {
+    font: 600 12px/1 ui-sans-serif, system-ui, sans-serif;
+    padding: 9px 12px; border-radius: 7px; border: 1px solid #d3d3d8;
+    background: #fff; color: #16161a; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,.13);
+  }
+  #chrome button:hover { background: #f2f2f5; }
+  #chrome button.danger { color: #a11; border-color: #e3c3c3; }
+  #note {
+    max-width: 300px; font-size: 11px; line-height: 1.5; color: #4a4a52;
+    background: rgba(255,255,255,.95); border: 1px solid #e0e0e5;
+    border-radius: 7px; padding: 8px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.09);
+  }
+  #note b { color: #16161a; }
+  #note.hidden { display: none; }
+  #note #noteClose {
+    float: right; margin: -3px -4px 0 8px; padding: 2px 6px;
+    font-size: 14px; line-height: 1; border: none; background: none;
+    color: #8a8a92; box-shadow: none; cursor: pointer;
+  }
+  #note #noteClose:hover { color: #16161a; background: none; }
+  #helpBtn { width: 32px; text-align: center; }
+  #chrome button.walk { padding: 9px 11px; }
+  .walklabel { font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; color: #4a4a52; align-self: center; margin-right: 2px; }
+  .gap { width: 8px; }
+  #status { font-size: 11px; color: #6a6a72; min-height: 14px; }
+
+  #fallback {
+    position: fixed; inset: 0; z-index: 2000; display: none;
+    place-content: center; padding: 40px;
+    background: #fafafa; color: #16161a;
+  }
+  #fallback.show { display: grid; }
+  #fallback code { background: #eee; padding: 2px 5px; border-radius: 4px; }
+  #fallbackBox { max-width: 560px; text-align: left; }
+  #fallbackBox h2 { margin: 0 0 10px; }
+  #fallbackBox p { line-height: 1.5; }
+  #fallbackDetails { margin-top: 14px; }
+  #fallbackDetails summary { cursor: pointer; color: #6a6a72; font-size: 12px; }
+  #fallbackStack {
+    max-height: 220px; overflow: auto; background: #eee; padding: 10px;
+    border-radius: 6px; font-size: 11px; line-height: 1.4; white-space: pre-wrap;
+    word-break: break-word; margin: 8px 0 0;
+  }
+  #fallbackActions { display: flex; gap: 10px; margin-top: 18px; }
+  #fallbackActions button {
+    font: 600 13px/1 ui-sans-serif, system-ui, sans-serif;
+    padding: 10px 14px; border-radius: 7px; border: 1px solid #d3d3d8;
+    background: #fff; color: #16161a; cursor: pointer;
+  }
+  #fallbackActions button:hover { background: #f2f2f5; }
+  #fallbackActions button.danger { color: #a11; border-color: #e3c3c3; }
+
+  /* The live panel is the call's chat. The canvas sits BESIDE it (not under), so "fit" and "focus" frame what you can see. */
+  #panel { position: fixed; top: 12px; right: 12px; bottom: 12px; width: 348px; z-index: 1000; display: flex; flex-direction: column;
+    background: #fffdf7; border: 1.5px solid #1e1e1e; border-radius: 10px; box-shadow: 3px 4px 0 rgba(0,0,0,.12); font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; color: #1e1e1e; }
+  body.panel-closed #panel { display: none; }
+  #panelHead { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px dashed #c9c4b5; }
+  #panelHead h3 { margin: 0; font-size: 15px; flex: 1; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #adb5bd; } .dot.on { background: #2f9e44; box-shadow: 0 0 0 3px rgba(47,158,68,.18); } .dot.off { background: #e03131; }
+  #conn { font-size: 12px; color: #6a6a72; }
+  #panelToggle, #openPanel { font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; padding: 6px 9px; border-radius: 6px; border: 1px solid #d3d3d8; background: #fff; cursor: pointer; }
+  #openPanel { position: fixed; top: 64px; right: 12px; z-index: 999; display: none; } body.panel-closed #openPanel { display: block; }
+  #thread { flex: 1; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { padding: 8px 10px; border-radius: 9px; max-width: 92%; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.person { align-self: flex-end; background: #d0ebff; border: 1px solid #a5d8ff; }
+  .msg.claude { align-self: flex-start; background: #fff4e6; border: 1px solid #ffd8a8; transition: box-shadow .4s; }
+  .msg.fresh { box-shadow: 0 0 0 3px #ffa94d; }
+  .msg .meta { font-size: 11px; color: #6a6a72; margin-bottom: 3px; } .msg .meta a { color: #1971c2; }
+  #compose { border-top: 1px dashed #c9c4b5; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+  #on { font-size: 12px; color: #868e96; } #on.set { color: #1971c2; font-weight: 600; }
+  #box { font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; border: 1px solid #ced4da; border-radius: 7px; padding: 8px; resize: none; height: 64px; }
+  #send { align-self: flex-end; font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; padding: 8px 14px; border-radius: 7px; border: 1px solid #1e1e1e; background: #1e1e1e; color: #fff; cursor: pointer; }
+  .link { font: 12px ui-sans-serif, system-ui, sans-serif; background: none; border: none; color: #868e96; cursor: pointer; padding: 0; text-decoration: underline; } .link.danger { color: #c92a2a; }
+  #status { font-size: 11px; color: #6a6a72; }
+  #laser { position: fixed; z-index: 900; pointer-events: none; border: 3px solid #e03131; border-radius: 14px; opacity: 0; }
+  #laser.show { animation: laser 3.6s ease-out forwards; }
+  @keyframes laser { 0% { opacity: 0; box-shadow: 0 0 0 0 rgba(224,49,49,.5); } 10% { opacity: 1; box-shadow: 0 0 0 10px rgba(224,49,49,.18); } 75% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* The whiteboard: the canvas hangs in a thin aluminium frame on a pale wall, the pointer is a marker pen, and a
+     drag over empty board circles an area in marker and opens a comment right there. Comments become pins. */
+  body { background: #e9e7e1; }
+  #root { inset: 10px; right: 382px; border: 7px solid #cfd4d9; border-radius: 12px; overflow: hidden; background: #fff;
+    box-shadow: inset 0 0 0 1px #b8bec4, 0 2px 0 #b8bec4, 0 6px 18px rgba(0,0,0,.10); } body.panel-closed #root { right: 10px; }
+  #marks { position: fixed; inset: 0; z-index: 890; pointer-events: none; overflow: visible; }
+  #marks path { fill: none; stroke: #e8590c; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; opacity: .9; }
+  #marks path.old { stroke: #fd7e14; stroke-width: 1.8; opacity: .45; stroke-dasharray: 6 6; }
+  #ink { position: fixed; z-index: 1001; width: 280px; display: none; background: #fff9db; border: 1.5px solid #1e1e1e; border-radius: 3px 10px 10px 10px;
+    box-shadow: 3px 4px 0 rgba(0,0,0,.14); padding: 8px; transform: rotate(-.6deg); font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; }
+  #ink.open { display: block; }
+  #ink .about { font-size: 12px; color: #d9480f; font-weight: 600; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #ink textarea { width: 100%; box-sizing: border-box; height: 58px; resize: none; border: none; background: transparent; outline: none;
+    font: 18px/1.3 Virgil, "Segoe Print", "Comic Sans MS", cursive; color: #1e1e1e; }
+  #ink .hint { font-size: 11px; color: #868e96; }
+  #pins { position: fixed; inset: 0; z-index: 895; pointer-events: none; }
+  .pin { position: absolute; pointer-events: auto; cursor: pointer; transform: translate(-50%, -50%) rotate(-4deg); min-width: 22px; height: 22px; padding: 0 5px;
+    box-sizing: border-box; border-radius: 11px 11px 11px 2px; border: 1.5px solid #1e1e1e; background: #d0ebff; font: 600 12px/19px ui-sans-serif, system-ui, sans-serif;
+    text-align: center; color: #1e1e1e; box-shadow: 2px 2px 0 rgba(0,0,0,.15); }
+  .pin.claude { background: #ffd8a8; } .pin:hover { transform: translate(-50%, -50%) rotate(0) scale(1.12); }
+  .msg.flash { box-shadow: 0 0 0 3px #74c0fc; }
+  /* A phone or a narrow window (a teammate on a shared link): the board on top, the discussion under it. At 372 px the
+     side panel left the board 14 px wide. */
+  @media (max-width: 760px) {
+    #root { inset: 6px 6px 40vh 6px; border-width: 5px; } body.panel-closed #root { inset: 6px; }
+    #panel { top: calc(60vh + 2px); left: 6px; right: 6px; bottom: 6px; width: auto; }
+    #openPanel { top: auto; bottom: 16px; }
+    #buttons { max-width: none; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+    /* the walk and Export row sat at right: 436px (beside the desktop panel), off the left edge of a phone */
+    #chrome { right: 14px; bottom: calc(40vh + 62px); max-width: calc(100vw - 28px); } body.panel-closed #chrome { bottom: 62px; }
+    .walklabel { display: none; }
+    #box { height: 44px; }
+  }
+  /* The guided tour: the board dims except a cut-out on the step's boxes, a narration card sits beside it, and
+     the presenter's pointer talks in a cursor-chat bubble. All DOM over the canvas, never scene elements; only the card, the
+     bubble and the panel's step list take clicks. */
+  #spot { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 897; pointer-events: none; display: none; }
+  #spot.show { display: block; }
+  #spotDim { fill: #1e1e1e; fill-opacity: .55; }
+  #spotRing { fill: none; stroke: #fff; stroke-opacity: .95; stroke-width: 2; }
+  #tourCard { position: fixed; left: 0; top: 0; z-index: 960; width: 320px; box-sizing: border-box; display: none; padding: 11px 14px 12px;
+    background: #fffdf7; border: 1.5px solid #1e1e1e; border-radius: 12px; box-shadow: 4px 5px 0 rgba(0,0,0,.18), 0 12px 32px rgba(0,0,0,.16);
+    font: 14px/1.5 ui-sans-serif, system-ui, sans-serif; color: #1e1e1e; }
+  #tourCard.show { display: block; animation: tourIn .22s ease-out; }
+  @keyframes tourIn { from { opacity: 0; } to { opacity: 1; } }
+  .tc-head { display: flex; align-items: center; gap: 8px; min-height: 24px; }
+  #tcCount { font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: #495057; background: #f1f3f5; border: 1px solid #dee2e6;
+    border-radius: 10px; padding: 4px 8px; white-space: nowrap; }
+  #tcFollow { flex: 1; min-width: 0; font-size: 12px; } #tcFollow .live { color: #2f9e44; font-weight: 600; white-space: nowrap; }
+  #tcRejoin { font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; color: #d9480f; background: #fff4e6; border: 1px solid #ffa94d; border-radius: 12px;
+    padding: 5px 9px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  #tcRejoin:hover { background: #ffe8cc; }
+  #tcClose { margin-left: auto; border: none; background: none; font-size: 21px; line-height: 1; color: #868e96; cursor: pointer; padding: 0 2px; }
+  #tcClose:hover { color: #1e1e1e; }
+  #tcTitle { font: 21px/1.25 Virgil, "Segoe Print", "Comic Sans MS", cursive; margin: 8px 0 4px; overflow-wrap: anywhere; }
+  #tcText { color: #343a40; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 38vh; overflow-y: auto; }
+  .tc-foot { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed #c9c4b5; }
+  #tcDots { flex: 1; display: flex; flex-wrap: wrap; align-items: center; gap: 1px; }
+  #tcDots button { width: 16px; height: 18px; padding: 0; border: none; background: none; cursor: pointer; display: grid; place-items: center; }
+  #tcDots button::before { content: ""; width: 9px; height: 9px; border-radius: 5px; border: 1.5px solid #1e1e1e; background: #fff; box-sizing: border-box; }
+  #tcDots button.on { width: 26px; } #tcDots button.on::before { width: 22px; background: #e8590c; border-color: #e8590c; }
+  /* a step someone answered gets a tick, in its dot and in the panel's list */
+  #tcDots button.ans::before { content: "✓"; width: 13px; height: 13px; border-radius: 7px; font: 700 9px/10px ui-sans-serif, system-ui, sans-serif;
+    color: #fff; background: #2f9e44; border-color: #2f9e44; text-align: center; }
+  #tcDots button.on.ans::before { width: 22px; background: #e8590c; border-color: #e8590c; }
+  #tcBack, #tcNext { font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; padding: 8px 13px; border-radius: 7px; border: 1px solid #1e1e1e; cursor: pointer; }
+  #tcBack { background: #fff; color: #1e1e1e; } #tcBack:disabled { opacity: .35; cursor: default; }
+  #tcNext { background: #1e1e1e; color: #fff; }
+  #tcNotch { position: absolute; width: 14px; height: 14px; box-sizing: border-box; background: #fffdf7; border: 0 solid #1e1e1e; transform: rotate(45deg); display: none; }
+  #tcNotch.n-right { display: block; left: -8px; border-left-width: 1.5px; border-bottom-width: 1.5px; }
+  #tcNotch.n-left { display: block; right: -8px; border-top-width: 1.5px; border-right-width: 1.5px; }
+  #tcNotch.n-below { display: block; top: -8px; border-top-width: 1.5px; border-left-width: 1.5px; }
+  #tcNotch.n-above { display: block; bottom: -8px; border-bottom-width: 1.5px; border-right-width: 1.5px; }
+  #tourBox { display: none; padding: 8px 12px 9px; border-bottom: 1px dashed #c9c4b5; background: #fff9db; }
+  #tourBox.show { display: block; }
+  #tourHead { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  #tourTitle { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tourGo { font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; padding: 5px 8px; border-radius: 6px; border: 1px solid #1e1e1e; background: #fff; cursor: pointer; white-space: nowrap; }
+  #tourSteps { list-style: none; margin: 6px 0 0; padding: 0; max-height: 150px; overflow-y: auto; }
+  #tourSteps li { display: flex; align-items: baseline; gap: 7px; padding: 3px 6px; border-radius: 6px; cursor: pointer; font-size: 13px; color: #495057; }
+  #tourSteps li:hover { background: rgba(0,0,0,.05); }
+  #tourSteps li.cur { background: #fff; color: #1e1e1e; font-weight: 600; box-shadow: inset 3px 0 0 #e8590c, 0 0 0 1px #ffd8a8; }
+  #tourSteps .n { font: 600 11px/1 ui-monospace, Menlo, monospace; color: #868e96; min-width: 14px; }
+  #tourSteps .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tourSteps .who { font: 700 10px/1.5 ui-sans-serif, system-ui, sans-serif; color: #fff; background: #7048e8; border-radius: 8px; padding: 0 6px;
+    max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #tourSteps .ans { color: #2f9e44; font-weight: 700; }
+  #chrome button#tourResume { background: #fff4e6; border-color: #ffa94d; color: #d9480f; }
+  /* The presenters' pointers: an arrow in the presenter's colour (Claude's is purple) with its
+     name always showing, and a cursor-chat bubble, placed in scene coordinates. Claude's is #cptr / #cchat; each other
+     presenter gets a copy. */
+  .cptr { position: fixed; left: 0; top: 0; z-index: 980; pointer-events: none; display: none; transform: translate(-3px, -2px);
+    filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.35)); transition: opacity .6s ease; }
+  .cptr.show { display: block; }
+  .cptr.fading { opacity: 0; }
+  .cptr svg { display: block; }
+  .cptr .tag { position: absolute; left: 20px; top: 25px; background: #7048e8; color: #fff; font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
+    padding: 4px 7px; border-radius: 9px; white-space: nowrap; box-shadow: 0 0 0 1.5px #fff; }
+  .cptr .tag.l { left: auto; right: 24px; } .cptr .tag.u { top: auto; bottom: 33px; }   /* no room right / below, or the card is there */
+  .cchat { position: fixed; left: 0; top: 0; z-index: 981; display: none; box-sizing: border-box; width: max-content; max-width: 250px; padding: 6px 12px 9px;
+    background: #7048e8; color: #fff; border-radius: 16px; box-shadow: 0 6px 18px rgba(30,30,30,.28); font: 15px/1.38 ui-sans-serif, system-ui, sans-serif;
+    cursor: pointer; overflow-wrap: anywhere; }
+  .cchat.show { display: block; animation: chatIn .16s ease-out; }
+  @keyframes chatIn { from { opacity: 0; } to { opacity: 1; } }
+  .cchat b { display: block; font: 600 11px/1.5 ui-sans-serif, system-ui, sans-serif; opacity: .78; }
+  .cchat .rest { display: none; visibility: hidden; }   /* the untyped words: measured for placement, never shown */
+  .cchat.br { border-top-left-radius: 4px; } .cchat.bl { border-top-right-radius: 4px; } .cchat.tl { border-bottom-right-radius: 4px; } .cchat.tr { border-bottom-left-radius: 4px; }
+  /* who presents, a step's question (✓ keep / ✎ change), and the step's feedback loop, on the card */
+  #tcFollow .pname { font-weight: 700; } #tcFollow .by { color: #495057; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; max-width: 100%; vertical-align: bottom; }
+  #tourCard [hidden] { display: none !important; }
+  #tcAsk { margin-top: 10px; padding: 9px 10px 10px; background: #fff4e6; border: 1px solid #ffd8a8; border-radius: 9px; }
+  #tcQ { font-weight: 600; margin-bottom: 7px; overflow-wrap: anywhere; }
+  .tc-pick { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tc-pick button, .tc-fb button { font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; padding: 7px 10px; border-radius: 7px; border: 1px solid #1e1e1e; background: #fff; color: #1e1e1e; cursor: pointer; white-space: nowrap; }
+  #tcKeep { background: #ebfbee; border-color: #2f9e44; color: #2b8a3e; } #tcKeep:hover { background: #d3f9d8; }
+  #tcChange:hover, .tc-fb button:hover { background: #f1f3f5; }
+  .tc-pick input, .tc-fb input { flex: 1; min-width: 110px; font: 14px ui-sans-serif, system-ui, sans-serif; padding: 6px 8px; border: 1.5px solid #adb5bd; border-radius: 7px; background: #fff; }
+  .tc-pick input:focus, .tc-fb input:focus { outline: none; border-color: #1971c2; }
+  .tc-pick input.want { border-color: #e8590c; }
+  #tcAns { margin-top: 6px; font-size: 13px; color: #2b8a3e; } #tcAns:empty { display: none; }
+  #tcFbOpen { margin-top: 8px; font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; color: #495057; background: none; border: 1px dashed #adb5bd; border-radius: 12px; padding: 5px 9px; cursor: pointer; }
+  #tcFbOpen:hover { color: #1e1e1e; border-color: #495057; }
+  .tc-fb { display: flex; gap: 6px; margin-top: 8px; }
+  #tcLoop { margin-top: 8px; max-height: 128px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px; } #tcLoop:empty { display: none; }
+  #tcLoop .m { font-size: 13px; line-height: 1.4; padding: 5px 8px; border-radius: 8px; background: #f1f3f5; overflow-wrap: anywhere; white-space: pre-wrap; }
+  #tcLoop .m.agent { background: #f3f0ff; } #tcLoop .m b { font-weight: 700; margin-right: 4px; }
+  @media (max-width: 760px) {
+    .cchat { max-width: 210px; font-size: 14px; } #tcLoop { max-height: 84px; } #tourSteps { max-height: 72px; } #tcText { max-height: 20vh; } #tcTitle { font-size: 18px; margin-top: 6px; }
+    #tourCard { padding: 9px 12px 10px; } .tc-foot { margin-top: 8px; padding-top: 8px; }
+    body.touring #chrome { display: none; }   /* on a phone the walk row sits inside the board, over the card's Back/Next */
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<div id="fallback">
+  <div id="fallbackBox">
+    <h2 id="fallbackTitle">The board couldn't load its editor.</h2>
+    <p id="fallbackMsg">This page pulls React from <code>cdnjs.cloudflare.com</code> and Excalidraw from
+       <code>unpkg.com</code> at open time, so it needs a network connection. Reconnect and reload — your
+       saved edits are untouched.</p>
+    <details id="fallbackDetails" hidden>
+      <summary>Technical details</summary>
+      <pre id="fallbackStack"></pre>
+    </details>
+    <div id="fallbackActions">
+      <button id="fallbackReload">Reload page</button>
+      <button id="fallbackReset" class="danger">Clear this board's saved data and reload</button>
+    </div>
+  </div>
+</div>
+
+<div id="laser"></div>
+<svg id="marks"></svg>
+<div id="pins"></div>
+<svg id="spot" aria-hidden="true"><defs>
+  <filter id="spotSoft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter>
+  <mask id="spotMask" maskUnits="userSpaceOnUse" x="0" y="0" width="100%" height="100%"><rect x="0" y="0" width="100%" height="100%" fill="#fff"/>
+    <rect id="spotHole" rx="16" fill="#000" filter="url(#spotSoft)"/></mask></defs>
+  <rect id="spotDim" mask="url(#spotMask)"/><rect id="spotRing" rx="16"/></svg>
+<div id="tourCard" role="dialog" aria-label="Guided tour">
+  <div class="tc-head"><span id="tcCount"></span><span id="tcFollow"></span><button id="tcClose" title="Leave the tour (Esc)">&times;</button></div>
+  <div id="tcTitle"></div><div id="tcText"></div>
+  <div id="tcAsk" hidden><div id="tcQ"></div>
+    <div class="tc-pick"><button id="tcKeep" title="Keep it as it is">✓ keep</button><button id="tcChange" title="Say what to change, then press this or Enter">✎ change →</button><input id="tcWhat" maxlength="400" placeholder="what to change" aria-label="What to change"></div>
+    <div id="tcAns"></div></div>
+  <button id="tcFbOpen" title="Tell the presenter something about this step">💬 Feedback</button>
+  <div class="tc-fb" id="tcFb" hidden><input id="tcFbText" maxlength="1000" placeholder="your feedback on this step" aria-label="Feedback on this step"><button id="tcFbSend">Send</button></div>
+  <div id="tcLoop"></div>
+  <div class="tc-foot"><div id="tcDots"></div><button id="tcBack" title="Back (←)">Back</button><button id="tcNext" title="Next (→)">Next</button></div>
+  <i id="tcNotch"></i>
+</div>
+<div id="cptr" class="cptr" aria-hidden="true"><svg width="26" height="31" viewBox="0 0 26 31"><path d="M3 2v22.2l5.9-5.6 4 9 4.2-1.8-4-8.9 8.3-.5z" fill="#7048e8" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg><span class="tag">Claude</span></div>
+<div id="cchat" class="cchat" title="Click to show it all"><b>Claude</b><span class="typed"></span><span class="rest"></span></div>
+<div id="ink"><div class="about" id="inkAbout"></div><textarea id="inkBox" placeholder="Say it here…"></textarea><div class="hint">Enter sends · Esc cancels</div></div>
+<button id="openPanel">Live discussion</button>
+<div id="panel">
+  <div id="panelHead"><span id="dot" class="dot"></span><h3>Live discussion</h3><span id="conn">connecting…</span><button id="panelToggle" title="Hide the panel">hide</button></div>
+  <div id="tourBox"><div id="tourHead"><span>🧭</span><b id="tourTitle"></b><button id="tourGo"></button></div><ol id="tourSteps"></ol></div>
+  <div id="thread"></div>
+  <div id="compose">
+    <div id="on">on: the whole board</div>
+    <textarea id="box" placeholder="Click a box, or drag over an area of the board, then type. Enter sends, Shift+Enter is a new line."></textarea>
+    <button id="send">Send</button>
+  </div>
+</div>
+
+<div id="chrome">
+  <div id="buttons">
+    <button id="exportBtn">Export</button>
+    <button id="helpBtn" title="How saving works">?</button>
+  </div>
+  <div id="note" class="hidden">
+    <button id="noteClose" title="Hide this note">&times;</button>
+    <b>Edits save as you go,</b> for everyone on this board. Double-click any text to change it.
+    <b>Export</b> downloads a .excalidraw copy (it opens on excalidraw.com and in Obsidian).
+  </div>
+  <div id="status"></div>
+</div>
+
+<!-- Excalidraw 0.17.6: the last release with a real UMD bundle (0.18+ is pure
+     ESM plus a cross-origin font-subsetting worker). Three plain blocking
+     script tags, no import map; the bundle self-injects its CSS and fonts. -->
+<script>
+  window.EXCALIDRAW_ASSET_PATH = "https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/";
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"
+        onerror="window.__reportFailure('The board could not load.', 'Could not fetch react.production.min.js from cdnjs.cloudflare.com. Check your connection, then reload.')"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"
+        onerror="window.__reportFailure('The board could not load.', 'Could not fetch react-dom.production.min.js from cdnjs.cloudflare.com. Check your connection, then reload.')"></script>
+<script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js"
+        onerror="window.__reportFailure('The board could not load its editor.', 'Could not fetch excalidraw.production.min.js from unpkg.com. Check your connection, then reload.')"></script>
+
+<script>
+/* The page: an Excalidraw board with the live call on top (the discussion panel, comment pins, the agents' pointers
+   and the guided tour). src/server.mjs serves it and holds the scene, which starts as any .excalidraw file, loaded as it
+   is. */
+
+const PERSISTENCE_KEY = window.PERSISTENCE_KEY;
+const ELEMENTS_KEY = window.__BOARD_ELEMENTS_KEY;
+const APPSTATE_KEY = window.__BOARD_APPSTATE_KEY;
+const fail = window.__reportFailure;
+
+/* ------------------------------------------------------------- styles -- */
+// The agent's notes and arrows: blue (or orange), in Excalidraw's hand-drawn font.
+const FF = ExcalidrawLib.FONT_FAMILY || {};
+const HAND = FF.Virgil || 1;
+const BLUE = "#1971c2";
+const BLUE_INK = "#1864ab";
+
+/* ------------------------------------------------------------------ mount -- */
+
+let statusTimer = null;
+function setStatus(msg) {
+  const el = document.getElementById("status");
+  if (!el) return;
+  el.textContent = msg;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => { el.textContent = ""; }, 2500);
+}
+
+class BoardErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { hasError: false }; }
+  static getDerivedStateFromError() { return { hasError: true }; }
+  componentDidCatch(error, info) {
+    fail(
+      "The board hit an error while loading.",
+      "Excalidraw crashed while rendering the board: " + ((error && error.message) || String(error)),
+      (error && error.stack ? error.stack + "\n\n" : "") + ((info && info.componentStack) || "")
+    );
+  }
+  render() { return this.state.hasError ? null : this.props.children; }
+}
+
+/** First view: the whole board, zoom capped at 100%, kept clear of
+ * Excalidraw's own chrome: the menu and toolbar along the top, the zoom/undo
+ * bar and help button along the bottom. Bounds are read off the scene at
+ * framing time, so they follow the board as it is. */
+const NO_INSETS = { top: 0, bottom: 0, side: 0 };
+const FIRST_VIEW_INSETS = { top: 104, bottom: 64, side: 24 };  // clear of the toolbar AND the hint line under it
+
+/** Scene bounds. Not x/y/width: an arrow's x/y is its first point, and its
+ * points can run left of it. */
+function sceneBounds(api) {
+  const els = api.getSceneElements().filter((e) => !e.isDeleted);
+  if (!els.length) return { x: 0, y: 0, w: 1440, h: 900 };
+  let x0, y0, x1, y1;
+  if (typeof ExcalidrawLib.getCommonBounds === "function") {
+    [x0, y0, x1, y1] = ExcalidrawLib.getCommonBounds(els);
+  } else {
+    x0 = y0 = Infinity; x1 = y1 = -Infinity;
+    els.forEach((e) => {
+      const pts = Array.isArray(e.points) && e.points.length ? e.points : [[0, 0], [e.width, e.height]];
+      pts.forEach(([px, py]) => {
+        x0 = Math.min(x0, e.x + px); y0 = Math.min(y0, e.y + py);
+        x1 = Math.max(x1, e.x + px); y1 = Math.max(y1, e.y + py);
+      });
+    });
+  }
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+}
+
+function frameRect(api, r, maxZoom = 1, insets = NO_INSETS) {
+  const st = api.getAppState();
+  const vw = st.width, vh = st.height;
+  const aw = vw - 2 * insets.side;
+  const ah = vh - insets.top - insets.bottom;
+  const z = Math.max(0.1, Math.min(maxZoom, aw / r.w, ah / r.h));
+  api.updateScene({
+    appState: {
+      zoom: { value: z },
+      scrollX: vw / (2 * z) - (r.x + r.w / 2),
+      scrollY: (insets.top + ah / 2) / z - (r.y + r.h / 2),
+    },
+  });
+  window.__board.zoom = Math.round(z * 1000) / 1000;
+}
+
+function frameFirstView(api) {
+  frameRect(api, sceneBounds(api), 1, FIRST_VIEW_INSETS);
+}
+
+function wireNoteToggle() {
+  const note = document.getElementById("note");
+  const NOTE_KEY = PERSISTENCE_KEY + ":note-hidden";
+  const setHidden = (hidden) => {
+    note.classList.toggle("hidden", hidden);
+    try { localStorage.setItem(NOTE_KEY, hidden ? "1" : "0"); } catch (e) { /* ignore */ }
+  };
+  try { if (localStorage.getItem(NOTE_KEY) === "0") note.classList.remove("hidden"); } catch (e) { /* ignore */ }
+  document.getElementById("noteClose").onclick = () => setHidden(true);
+  document.getElementById("helpBtn").onclick = () => setHidden(!note.classList.contains("hidden"));
+}
+
+/** Walk buttons: one per frame in the board (in the file's order), then All. A board without frames has none. */
+function wireWalk(api, elements) {
+  const frames = (elements || []).filter((e) => e.type === "frame" && !e.isDeleted);
+  if (!frames.length) return;
+  const row = document.getElementById("buttons"), first = row.firstChild;
+  const add = (el) => row.insertBefore(el, first);
+  const label = document.createElement("span"); label.className = "walklabel"; label.textContent = "Walk through"; add(label);
+  frames.forEach((f, i) => {
+    const b = document.createElement("button");
+    b.className = "walk"; b.dataset.frame = f.id; b.textContent = String(i + 1); b.title = f.name || `Frame ${i + 1}`;
+    b.onclick = () => {
+      const e = api.getSceneElements().find((x) => x.id === f.id);
+      if (e) frameRect(api, { x: e.x, y: e.y, w: e.width, h: e.height }, 1.25, FIRST_VIEW_INSETS);
+    };
+    add(b);
+  });
+  const all = document.createElement("button");
+  all.className = "walk"; all.dataset.frame = "all"; all.textContent = "All"; all.onclick = () => frameFirstView(api); add(all);
+  const gap = document.createElement("span"); gap.className = "gap"; add(gap);
+}
+
+const exportName = () => `${String((window.__boardInfo || {}).name || "board").replace(/[\\/:*?"<>|\x00-\x1f]+/g, "-") || "board"}.excalidraw`;
+
+function exportExcalidrawFile(api) {
+  const json = ExcalidrawLib.serializeAsJSON(api.getSceneElements(), api.getAppState(), api.getFiles(), "local");
+  const blob = new Blob([json], { type: "application/vnd.excalidraw+json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = exportName();
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  setStatus(`exported ${exportName()}`);
+}
+
+/* -------------------------------------------------------------- live call -- */
+// The call: the person types in the panel (with a box selected, it's "on" that box). The server appends it to
+// live/thread.jsonl and live/events.log, where the agent hears it. The agent's replies and drawing ops land in the same
+// thread; the page polls it every 1.5 s, shows replies, and applies ops: note (a sticky), arrow, focus (glide + red
+// laser), edit, delete.
+// Multiplayer: the server holds the scene. This page loads it, sends only the elements it changed, and takes
+// everyone else's changes and cursors by long-polling /api/changes. Per element the higher version wins, as in Excalidraw.
+const LOADED_AT = Date.now();
+const live = (() => {
+  const onServer = location.protocol.startsWith("http"), probe = /[?&]probe/.test(location.search);
+  let api = null, sel = null, firstPoll = true;
+  const seen = new Set(), $ = (id) => document.getElementById(id);
+  // Who this page is: a name typed once (kept in localStorage), ?name=, or "You", the person at this computer. A shared
+  // link's key (?k=) is a cookie by now, so it leaves the address bar.
+  const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname), NAME_KEY = "board:name", cid = Math.random().toString(36).slice(2, 10);
+  if (/[?&]k=/.test(location.search)) { const u = new URL(location.href); u.searchParams.delete("k"); history.replaceState(null, "", u); }
+  let me = (() => { try { return new URLSearchParams(location.search).get("name") || localStorage.getItem(NAME_KEY); } catch (e) { return null; } })() || (atHome ? "You" : "");
+  me = String(me).trim().slice(0, 24);
+  // The person at this computer is recorded as "you" and everyone else sees them as "Host" (the server's authorOf and
+  // shown). Through the link, a page calling itself You or Host is recorded as "you (link)" or "host (link)", and that
+  // is still this page.
+  const isMe = (author) => { const a = String(author || "you").toLowerCase(), m = me.toLowerCase(); return a === m || (!atHome && a === `${m} (link)`); };
+  const nameOf = (author) => author === "claude" ? "Claude" : !author || author === "you" ? "Host" : String(author).replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+  const INKS = ["#e8590c", "#1971c2", "#2f9e44", "#9c36b5", "#c2255c", "#0c8599", "#f08c00", "#6741d9"];
+  const inkOf = (n) => { let h = 0; for (const c of String(n).toLowerCase()) h = (h * 31 + c.charCodeAt(0)) >>> 0; return INKS[h % INKS.length]; };
+  const newer = (a, b) => !b || a.version > b.version || (a.version === b.version && a.versionNonce < b.versionNonce);
+  const sent = new Map();   // element id → the version the server has (we sent it, or it came from the server)
+  const peers = new Map();  // page id → { name, pointer, button, selected }
+  const here = () => { const n = [...new Set([me, ...[...peers.values()].map((p) => p.name)].filter(Boolean))]; return n.length > 1 ? `live · ${n.join(", ")}` : "live"; };
+  function askName(done) {
+    const d = document.createElement("div");
+    d.innerHTML = `<form style="background:#fff;border:2px solid #1e1e1e;border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:10px;width:min(320px,86vw);font:15px system-ui">
+      <b style="font-size:18px">Who's joining?</b><span style="color:#6a6a72">Your name shows on your cursor and your comments.</span>
+      <input maxlength="24" placeholder="your name" style="font:16px system-ui;padding:9px 10px;border:1.5px solid #adb5bd;border-radius:8px">
+      <button style="font:600 15px system-ui;padding:9px;border:0;border-radius:8px;background:#1971c2;color:#fff">Join the board</button></form>`;
+    Object.assign(d.style, { position: "fixed", inset: "0", background: "rgba(30,30,30,.35)", display: "grid", placeItems: "center", zIndex: "9999" });
+    d.querySelector("form").onsubmit = (e) => {
+      e.preventDefault(); const v = d.querySelector("input").value.trim().slice(0, 24);
+      if (!v || v.toLowerCase() === "claude") return;
+      me = v; try { localStorage.setItem(NAME_KEY, v); } catch (err) { /* ignore */ }
+      d.remove(); done();
+    };
+    document.body.appendChild(d); setTimeout(() => d.querySelector("input").focus(), 0);
+  }
+  // Everyone else's changes: take an element when theirs is newer, never the one this page is dragging or typing in.
+  function merge(remote) {
+    const st = api.getAppState(), busy = new Set([st.editingElement, st.draggingElement, st.resizingElement].filter(Boolean).map((e) => e.id));
+    const byId = new Map(api.getSceneElementsIncludingDeleted().map((e) => [e.id, e]));
+    let took = 0;
+    for (const r of remote) {
+      const l = byId.get(r.id);
+      if (l && busy.has(r.id)) continue;
+      if (newer(r, l)) { byId.set(r.id, r); sent.set(r.id, r.version); took++; }
+    }
+    // Excalidraw 0.17's undo restores whole-scene snapshots, so with someone else's change in between it would put their
+    // work back the way it was (and it froze the page in testing). Undo starts fresh after each remote change:
+    // it only ever takes back your own edits since then.
+    // (Recording the merged board right after the clear makes it the first undo step, so your next edit can be undone.)
+    if (took) { api.history.clear(); api.updateScene({ elements: layer([...byId.values()]), commitToHistory: true }); pullFiles(); }
+  }
+  let pushTimer = null;
+  function queuePush() {
+    if (!onServer || probe || !api || !me) return;
+    if (!pushTimer) pushTimer = setTimeout(pushNow, 120);
+  }
+  // Pictures: an image element carries only a fileId, and Excalidraw keeps the pixels in this page's files, so
+  // a pasted screenshot never left the tab and was gone on reload. Send the server each picture it lacks, once; fetch
+  // any picture an element needs that this page lacks.
+  const picsSent = new Set(), picsAsked = new Map();
+  function pushFiles() {
+    const have = api.getFiles(), out = [];
+    for (const e of api.getSceneElements()) if (e.type === "image" && have[e.fileId] && !picsSent.has(e.fileId)) { picsSent.add(e.fileId); out.push(have[e.fileId]); }
+    if (!out.length) return;
+    fetch("/api/files", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files: out.map(({ id, mimeType, dataURL, created }) => ({ id, mimeType, dataURL, created })), c: cid, name: me }) })
+      .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); }).catch(() => { for (const f of out) picsSent.delete(f.id); });   // resent with the next change
+  }
+  async function pullFiles(force) {
+    if (!onServer || !api) return;
+    const have = api.getFiles(), now = Date.now();
+    const want = [...new Set(api.getSceneElements().filter((e) => e.type === "image" && e.fileId && !have[e.fileId]).map((e) => e.fileId))]
+      .filter((id) => force || now - (picsAsked.get(id) || 0) > 10000);
+    if (!want.length) return;
+    want.forEach((id) => picsAsked.set(id, now));
+    try {
+      const { files } = await (await fetch(`/api/files?ids=${want.map(encodeURIComponent).join(",")}`, { cache: "no-store" })).json();
+      if (files && files.length) { files.forEach((f) => picsSent.add(f.id)); api.addFiles(files); }
+    } catch (e) { /* asked again when the server says it has new pictures */ }
+  }
+  function pushNow(leaving) {
+    clearTimeout(pushTimer); pushTimer = null;
+    if (probe) return;   // a ?probe page never writes: the first poll's reset path called this directly and seeded an empty server
+    if (!leaving) pushFiles();
+    const delta = api.getSceneElementsIncludingDeleted().filter((e) => sent.get(e.id) !== e.version);
+    if (!delta.length) return;
+    for (const e of delta) sent.set(e.id, e.version);
+    fetch("/api/scene", { method: "POST", keepalive: !!leaving, headers: { "content-type": "application/json" }, body: JSON.stringify({ elements: delta, c: cid, name: me }) })
+      .catch(() => { for (const e of delta) sent.delete(e.id); });   // resent with the next change
+  }
+  function drawPeers() {
+    const collaborators = new Map();
+    for (const [id, p] of peers) if (p.pointer) collaborators.set(id, { username: p.name, pointer: p.pointer, button: p.button || "up", selectedElementIds: p.selected || {}, color: { background: inkOf(p.name), stroke: inkOf(p.name) } });
+    api.updateScene({ collaborators });
+    if ($("dot").classList.contains("on")) $("conn").textContent = here();
+  }
+  // The room: long-poll /api/changes. It answers as soon as anything this page hasn't seen happens (or after 25 s), which
+  // works through any tunnel; a Cloudflare quick tunnel never delivers server-sent events.
+  let joined = false;
+  const handle = { elements: (d) => merge(d.elements), join: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), name: d.name }),
+    presence: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), ...d }), leave: (d) => peers.delete(d.id), thread: () => poll(), files: () => pullFiles(true) };
+  async function listen() {
+    joined = true;
+    let since = -1;
+    window.addEventListener("pagehide", () => navigator.sendBeacon("/api/leave", JSON.stringify({ c: cid })));
+    for (;;) {
+      try {
+        const r = await (await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store" })).json();
+        if (r.reset) { peers.clear(); merge((await (await fetch("/api/scene", { cache: "no-store" })).json()).elements); pushNow(); }   // the server restarted, or we fell behind
+        since = r.seq;
+        for (const ev of r.events || []) if (handle[ev.event]) handle[ev.event](ev.data);
+        if ((r.events || []).some((ev) => ev.event !== "elements")) drawPeers();
+      } catch (e) { await new Promise((ok) => setTimeout(ok, 2000)); }
+    }
+  }
+  let ptrTimer = null, ptrNext = null;
+  function pointer({ pointer: p, button }) {
+    if (!joined || !p) return;
+    ptrNext = { pointer: { x: p.x, y: p.y, tool: p.tool }, button };
+    if (ptrTimer) return;
+    ptrTimer = setTimeout(() => {
+      ptrTimer = null;
+      fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ c: cid, ...ptrNext, selected: api.getAppState().selectedElementIds }) }).catch(() => {});
+    }, 60);
+  }
+  const labelOf = (id) => {
+    if (!api || !id) return null;
+    const els = api.getSceneElements(), el = els.find((e) => e.id === id);
+    if (!el) return null;
+    // a click lands on a box's title text: name the box (its group), not the text
+    const gid = (el.groupIds || [])[0], box = gid ? els.find((e) => e.id === gid.replace(/__grp$/, "")) : null;
+    const target = box || (el.containerId ? els.find((e) => e.id === el.containerId) : el);
+    const title = els.find((e) => e.id === `${target.id}__title`) || els.find((e) => e.type === "text" && e.containerId === target.id);
+    const text = (target.type === "text" ? target.text : title ? title.text : target.type) || target.id;
+    return { id: target.id, label: text.split("\n")[0].slice(0, 60) };
+  };
+  function select(id, ids) {
+    sel = ids && ids.length > 1 ? areaOn(ids) : labelOf(id);
+    if (!sel && T.cur) sel = stepOn();   // during a tour, a comment lands on the step's boxes
+    $("on").textContent = sel ? `on: ${sel.label}` : "on: the whole board (click a box to point at it)";
+    $("on").classList.toggle("set", !!sel);
+  }
+  // The presenter's camera: glide to the elements' bounds (zoom capped), then a red laser drawn in the page, not the scene.
+  function view(ids, laserOn) {
+    const els = api.getSceneElements().filter((e) => ids.includes(e.id) && !e.isDeleted);
+    if (!els.length) return;
+    const [x0, y0, x1, y1] = ExcalidrawLib.getCommonBounds(els), pad = 60, st = api.getAppState();
+    const z = Math.max(.25, Math.min(1.15, st.width / (x1 - x0 + 2 * pad), st.height / (y1 - y0 + 2 * pad)));
+    tween({ z, sx: st.width / (2 * z) - (x0 + x1) / 2, sy: st.height / (2 * z) - (y0 + y1) / 2 }, (done) => { if (done && laserOn) laser([x0, y0, x1, y1]); });
+  }
+  // The glide itself (450 ms, eased), shared by focus and the tour. A newer glide cancels an older one, whose
+  // `done(false)` still runs, so a tour step never waits on a glide that was overtaken.
+  let glideN = 0;
+  // An animation frame, or 64 ms, whichever comes first: a tab in the background gets no frames, and a tour step or a
+  // gesture must still land there (it shows the end state when you switch back, not a glide that starts then).
+  const frame = (cb) => { let ran = false; const go = () => { if (!ran) { ran = true; cb(performance.now()); } }; requestAnimationFrame(go); setTimeout(go, 64); };
+  function tween(to, done) {
+    const n = ++glideN, st = api.getAppState(), from = { z: st.zoom.value, sx: st.scrollX, sy: st.scrollY }, t0 = performance.now();
+    const step = (now) => {
+      if (n !== glideN) return done && done(false);
+      const k = Math.min(1, (now - t0) / 450), e = k * k * (3 - 2 * k), L = (a, b) => a + (b - a) * e;
+      api.updateScene({ appState: { zoom: { value: L(from.z, to.z) }, scrollX: L(from.sx, to.sx), scrollY: L(from.sy, to.sy) } });
+      // done one frame later: Excalidraw commits updateScene through React state, so a getAppState() read
+      // straight away could see the half-zoomed camera, and a first beat's reveal() then panned away from the step.
+      if (k < 1) frame(step); else if (done) frame(() => done(n === glideN));
+    };
+    frame(step);
+  }
+  function laser([x0, y0, x1, y1]) {
+    const st = api.getAppState(), a = ExcalidrawLib.sceneCoordsToViewportCoords({ sceneX: x0, sceneY: y0 }, st), b = ExcalidrawLib.sceneCoordsToViewportCoords({ sceneX: x1, sceneY: y1 }, st);
+    const el = $("laser"), m = 10;
+    Object.assign(el.style, { left: `${a.x - m}px`, top: `${a.y - m}px`, width: `${b.x - a.x + 2 * m}px`, height: `${b.y - a.y + 2 * m}px` });
+    el.classList.remove("show"); void el.offsetWidth; el.classList.add("show");
+  }
+  /* ---- whiteboard: marker-pen pointer, drag an area to comment on it in place, comment pins ---- */
+  const onOf = (on) => !on ? null : typeof on === "string" ? (labelOf(on) || { id: on, label: on }) : on;
+  // the boxes behind a set of element ids (a click on a title names its box), deduped
+  const boxIds = (ids) => [...new Set(ids.map((id) => (labelOf(id) || {}).id).filter(Boolean))];
+  const areaOn = (ids, rect) => {
+    const labels = ids.map((id) => { const l = labelOf(id).label; return l.length > 24 ? `${l.slice(0, 23)}…` : l; });
+    const label = labels.length === 1 && !rect ? labels[0] : `area: ${labels.slice(0, 3).join(", ") || "empty board"}${labels.length > 3 ? ` +${labels.length - 3}` : ""}`;
+    return { id: ids[0] || null, ids, label: label.slice(0, 80), ...(rect ? { rect } : {}) };
+  };
+  const toView = (x, y, st) => ExcalidrawLib.sceneCoordsToViewportCoords({ sceneX: x, sceneY: y }, st || api.getAppState());
+  const live$ = () => api.getSceneElements().filter((e) => !e.isDeleted);
+  const rectOf = (on) => {
+    if (on.rect) return [on.rect.x, on.rect.y, on.rect.x + on.rect.w, on.rect.y + on.rect.h];
+    const els = live$().filter((e) => (on.ids || [on.id]).includes(e.id));
+    return els.length ? ExcalidrawLib.getCommonBounds(els) : null;
+  };
+  function show(on) {
+    const ids = on.ids && on.ids.length ? on.ids : on.id ? [on.id] : [];
+    if (ids.length) view(ids, true);
+    if (on.rect) mark(rectOf(on), "old", 3600);
+  }
+  // A marker loop around a scene rect: four slightly bowed strokes that overshoot at the corners, like a hand circling.
+  function loopPath(r, st) {
+    const [x0, y0, x1, y1] = r, a = toView(x0 - 10, y0 - 10, st), b = toView(x1 + 10, y1 + 10, st);
+    let seed = Math.abs(Math.round(x0 * 7 + y0 * 13)) || 1; const j = (k) => ((seed = (seed * 9301 + 49297) % 233280) / 233280 - .5) * k;
+    const P = [[a.x, a.y], [b.x, a.y], [b.x, b.y], [a.x, b.y], [a.x, a.y]];
+    // cut each corner with a curve, bow each side a little, and overshoot where the pen comes back to the start
+    const c = Math.min(26, (b.x - a.x) / 4, (b.y - a.y) / 4), w = 7;
+    const side = (p, q) => { const ux = Math.sign(q[0] - p[0]), uy = Math.sign(q[1] - p[1]); return [[p[0] + ux * c + j(w), p[1] + uy * c + j(w)], [q[0] - ux * c + j(w), q[1] - uy * c + j(w)]]; };
+    const S = [0, 1, 2, 3].map((i) => side(P[i], P[i + 1]));
+    let d = `M${S[0][0][0]} ${S[0][0][1]}`;
+    for (let i = 0; i < 4; i++) {
+      const [s0, s1] = S[i], mx = (s0[0] + s1[0]) / 2 + j(w * 2), my = (s0[1] + s1[1]) / 2 + j(w * 2), n = S[(i + 1) % 4][0], k = P[i + 1];
+      d += ` Q${mx} ${my} ${s1[0]} ${s1[1]} Q${k[0] + j(w)} ${k[1] + j(w)} ${i === 3 ? n[0] + 22 : n[0]} ${i === 3 ? n[1] + j(w) : n[1]}`;
+    }
+    return d;
+  }
+  function mark(r, cls, ms) {
+    if (!r) return; const el = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    el.setAttribute("d", loopPath(r)); if (cls) el.setAttribute("class", cls); el.__r = r; $("marks").appendChild(el);
+    if (ms) setTimeout(() => el.remove(), ms); return el;
+  }
+  const pins = new Map();
+  function addPin(on, item, div) {
+    const key = on.rect ? `area:${["x", "y", "w", "h"].map((k) => Math.round(on.rect[k])).join(",")}` : (on.ids && on.ids.length > 1 ? on.ids.join(",") : on.id);
+    if (!key) return;
+    let p = pins.get(key);
+    if (!p) {
+      p = { on, divs: [], el: document.createElement("div") }; p.el.className = "pin"; pins.set(key, p); $("pins").appendChild(p.el);
+      p.el.onclick = () => { show(p.on); const d = p.divs[p.divs.length - 1]; d.scrollIntoView({ block: "nearest" }); d.classList.add("flash"); setTimeout(() => d.classList.remove("flash"), 1500); };
+      p.el.onmouseenter = () => { if (p.on.rect) p.hover = mark(rectOf(p.on), "old"); };
+      p.el.onmouseleave = () => { if (p.hover) p.hover.remove(); p.hover = null; };
+    }
+    p.divs.push(div); p.el.textContent = `💬 ${p.divs.length}`; p.el.classList.toggle("claude", item.author === "claude");
+    p.el.title = `${on.label} · ${item.text.slice(0, 80)}`;
+    if (api) placePins();
+  }
+  function placePins(st) {
+    if (!api) return; st = st || api.getAppState();
+    for (const p of pins.values()) {
+      const r = rectOf(p.on); if (!r) { p.el.style.display = "none"; continue; }
+      const v = toView(r[2], r[1], st); Object.assign(p.el.style, { display: "", left: `${v.x}px`, top: `${v.y}px` });
+    }
+    for (const el of $("marks").children) if (el.__r) el.setAttribute("d", loopPath(el.__r, st));
+  }
+  // The pointer is a marker pen wherever Excalidraw would show its default arrow (resize/move cursors stay as they are).
+  const PEN = `url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M24 3l5 5-15 15-6 1 1-6z" fill="#fff" stroke="#1e1e1e" stroke-width="1.6" stroke-linejoin="round"/><path d="M24 3l5 5-3 3-5-5z" fill="#e8590c" stroke="#1e1e1e" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.6 18.4l5 5L4 28z" fill="#e8590c" stroke="#1e1e1e" stroke-width="1.2" stroke-linejoin="round"/></svg>`)}") 4 28, crosshair`;
+  function penCursor() {
+    const fix = () => document.querySelectorAll(".excalidraw canvas").forEach((c) => { if (["", "auto", "default"].includes(c.style.cursor)) c.style.cursor = PEN; });
+    new MutationObserver(fix).observe(document.querySelector(".excalidraw") || document.body, { subtree: true, attributes: true, attributeFilter: ["style"], childList: true });
+    fix();
+  }
+  // Drag over EMPTY board (not starting on a box): circle that area in marker and open a sticky composer beside it.
+  const ink = { rect: null, mark: null, on: null };
+  function areaDrag() {
+    let down = null, space = false;   // Space+drag pans the canvas; it is not an area
+    window.addEventListener("keydown", (e) => { if (e.code === "Space") space = true; }, true);
+    window.addEventListener("keyup", (e) => { if (e.code === "Space") space = false; }, true);
+    window.addEventListener("blur", () => { space = false; });
+    $("root").addEventListener("pointerdown", (e) => {
+      down = null;
+      const st = api.getAppState();
+      if (space || e.button !== 0 || e.target.tagName !== "CANVAS" || st.activeTool.type !== "selection" || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
+      const p = ExcalidrawLib.viewportCoordsToSceneCoords({ clientX: e.clientX, clientY: e.clientY }, st);
+      const hit = live$().some((el) => !el.locked && el.type !== "arrow" && el.type !== "line" && (() => { const [x0, y0, x1, y1] = ExcalidrawLib.getCommonBounds([el]); return p.x >= x0 - 4 && p.x <= x1 + 4 && p.y >= y0 - 4 && p.y <= y1 + 4; })());
+      if (!hit) down = { cx: e.clientX, cy: e.clientY, p };
+    }, true);
+    window.addEventListener("pointerup", (e) => {
+      const d = down; down = null;
+      if (!d || Math.hypot(e.clientX - d.cx, e.clientY - d.cy) < 24) return;
+      const q = ExcalidrawLib.viewportCoordsToSceneCoords({ clientX: e.clientX, clientY: e.clientY }, api.getAppState());
+      const r = { x: Math.min(d.p.x, q.x), y: Math.min(d.p.y, q.y), w: Math.abs(q.x - d.p.x), h: Math.abs(q.y - d.p.y) };
+      const ids = boxesIn([r.x, r.y, r.x + r.w, r.y + r.h]);
+      openInk(r, areaOn(ids, r));
+      setTimeout(() => api.updateScene({ appState: { selectedElementIds: {} } }), 0);
+    }, true);
+    $("inkBox").addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); closeInk(); }
+      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); const t = $("inkBox").value.trim(); if (t) { const on = ink.on; closeInk(); post(t, on); } }
+    });
+  }
+  function openInk(r, on) {
+    closeInk(); Object.assign(ink, { rect: [r.x, r.y, r.x + r.w, r.y + r.h], on, mark: mark([r.x, r.y, r.x + r.w, r.y + r.h]) });
+    $("inkAbout").textContent = `✎ ${on.label}`; $("ink").classList.add("open"); placeInk(); setTimeout(() => $("inkBox").focus(), 0);
+  }
+  function placeInk(st) {
+    const v = toView(ink.rect[2], ink.rect[1], st), box = $("root").getBoundingClientRect();
+    $("ink").style.left = `${Math.max(box.left + 8, Math.min(v.x + 18, box.right - 296))}px`;
+    $("ink").style.top = `${Math.max(box.top + 8, Math.min(v.y, box.bottom - 130))}px`;
+  }
+  function closeInk() { if (ink.mark) ink.mark.remove(); Object.assign(ink, { rect: null, mark: null, on: null }); $("ink").classList.remove("open"); $("inkBox").value = ""; }
+
+  /* ---- the guided tour (FigJam-style) and the presenters' pointers with cursor chat ----
+     {op:"tour", tour_id, title, steps:[{target, title, text, points?:[{target, text}]}]} puts every open page in guided mode
+     at step 1: the board dims except a cut-out on the step's target (an SVG mask over the canvas, never scene elements), the
+     camera glides there leaving room for a narration card, and the comment composer points at the step's boxes.
+     {op:"tour_step", tour_id, index} (1-based) moves every page that follows the presenter. One that stepped away keeps its
+     place and gets a "back to live" chip. {op:"point", target, text} glides the presenter's pointer there and types the
+     words in a bubble; a step's `points` are beats the pointer plays in turn. The pointer is page DOM driven by ops, never
+     a cursor a page posts, so the name "claude" stays reserved. What a person does is reported (POST /api/tour, a TOUR
+     line in events.log, only to a server whose /api/hello says `tour`); what the agent drives is not. Ops already in the
+     record when the page loads never start or animate anything: an old tour waits behind "▶ Resume tour".
+     Presenters, answers and the feedback loop: a tour, tour_step or point op may name its `presenter` (an agent session,
+     set by board_open; "Claude" when absent). Each presenter has its own pointer, name and colour. The tour presenter's
+     pointer stays on screen with its name from the tour's first moment to its end; outside a tour a pointer stays where it
+     last pointed for 60 s, then fades. A step's `ask: {question}` puts ✓ keep / ✎ change on the card: a pick POSTs
+     /api/answer, the server records {op:"answer"} (every page ticks the step) and the presenting session hears it.
+     💬 Feedback on the card sends a comment on the step's boxes; the step's comments, answers and the presenter's replies
+     show under it on the card, so the back-and-forth happens where the person is looking. */
+  const tours = new Map();   // tour id → { id, title, steps, agentAt, driven, presenter, answers: Map(step → answer op) }
+  const T = { latest: null, cur: null, at: 1, following: true, side: null, gliding: false, left: new Set(), drawn: null };
+  const HOLE = 14, GAP = 18, TOUR_KEY = PERSISTENCE_KEY + ":tour", PARK_MS = 60000;
+  let canReport = Promise.resolve(false), canAnswer = false;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+  const canvasRect = () => (document.querySelector(".excalidraw") || $("root")).getBoundingClientRect();
+  // the boxes a scene rect touches (an area comment, an area step)
+  const boxesIn = ([x0, y0, x1, y1]) => boxIds(live$().filter((el) => !el.locked && el.type !== "arrow" && el.type !== "line" && !el.containerId && (() => {
+    const [a, b, c, d] = ExcalidrawLib.getCommonBounds([el]); return a < x1 && c > x0 && b < y1 && d > y0; })()).map((el) => el.id));
+  // A target's scene bounds and the boxes it names: an id, [ids], {area:{x,y,w,h}} or a scene point {x,y}.
+  function resolve(t) {
+    if (t && typeof t === "object" && !Array.isArray(t)) {
+      const a = t.area || { x: +t.x, y: +t.y, w: 0, h: 0 };
+      if (![a.x, a.y, a.w, a.h].every(Number.isFinite)) return { r: null, ids: [] };
+      const r = [a.x, a.y, a.x + a.w, a.y + a.h];
+      return t.area ? { r, ids: boxesIn(r), area: { x: a.x, y: a.y, w: a.w, h: a.h } } : { r, ids: [], point: true };
+    }
+    const ids = [].concat(t == null ? [] : t).map(String), els = live$().filter((e) => ids.includes(e.id));
+    return { r: els.length ? ExcalidrawLib.getCommonBounds(els) : null, ids: boxIds(els.map((e) => e.id)) };
+  }
+  const cur = () => T.cur && T.cur.steps[T.at - 1];
+  // The composer during a step: the step's boxes (or its area), labelled with the step, so a comment lands "on" it.
+  function stepOn() {
+    const s = cur(); if (!s) return null;
+    const g = resolve(s.target), l = `step ${T.at}/${T.cur.steps.length} · ${s.title || s.text || ""}`.replace(/\s+/g, " ").trim();
+    return { id: g.ids[0] || null, ids: g.ids, label: l.length > 80 ? `${l.slice(0, 79)}…` : l, tour: T.cur.id, step: T.at, ...(g.area ? { rect: g.area } : {}) };
+  }
+  const refreshOn = () => { const ids = Object.keys((api && api.getAppState().selectedElementIds) || {}); select(ids[0] || null, boxIds(ids)); };
+
+  /* the presenters */
+  // Claude keeps purple and the page's own #cptr / #cchat. Anyone else gets a copy in the next free
+  // colour from the board's inks (INKS, reordered: blue first, minus the violet next to Claude's), handed out in the order
+  // presenters first appear in the record, which every page reads the same way, so every page agrees.
+  const CLAUDE_INK = "#7048e8", PRES_INKS = ["#1971c2", "#2f9e44", "#c2255c", "#0c8599", "#e8590c", "#9c36b5", "#f08c00"];
+  const ptrs = new Map();   // lower-case name → pointer
+  let lastPtr = null;       // the pointer that moved last: what __board.pointer() reports outside a tour
+  const presName = (n) => { const s = String(n == null ? "" : n).replace(/[<>"`\n\r\t]/g, "").replace(/\s+/g, " ").trim().slice(0, 32); return !s || s.toLowerCase() === "claude" ? "Claude" : s; };
+  function ptrOf(name) {
+    name = presName(name); const k = name.toLowerCase();
+    let p = ptrs.get(k); if (p) return p;
+    let el = $("cptr"), chat = $("cchat"), ink = CLAUDE_INK;
+    if (k !== "claude") {
+      const used = new Set([...ptrs.values()].map((q) => q.ink)), n = ptrs.size + 1;
+      ink = PRES_INKS.find((c) => !used.has(c)) || PRES_INKS[n % PRES_INKS.length];
+      el = $("cptr").cloneNode(true); el.id = `cptr-${n}`; el.className = "cptr"; el.removeAttribute("style");
+      chat = $("cchat").cloneNode(true); chat.id = `cchat-${n}`; chat.className = "cchat"; chat.removeAttribute("style");
+      $("cchat").after(el, chat);
+    }
+    el.querySelector("path").setAttribute("fill", ink);
+    const tag = el.querySelector(".tag"); tag.textContent = name; tag.style.background = ink;
+    chat.querySelector("b").textContent = name; chat.style.background = ink;
+    p = { name, ink, el, chat, tag, typedEl: chat.querySelector(".typed"), restEl: chat.querySelector(".rest"),
+      at: null, box: null, text: "", typed: 0, run: 0, timer: null, fade: null, skip: null, beats: null };
+    p.typedEl.textContent = p.restEl.textContent = "";
+    chat.onclick = () => { if (p.skip) p.skip(); };
+    ptrs.set(k, p); return p;
+  }
+  const tourPtr = () => T.cur ? ptrOf(T.cur.presenter) : null;
+  const inTour = (p) => !!T.cur && tourPtr() === p;
+
+  /* the card */
+  function sizeCard() { const cv = canvasRect(); $("tourCard").style.width = cv.width < 640 ? `${Math.round(clamp(cv.width - 24, 200, 380))}px` : ""; }
+  function drawCard() {
+    const t = T.cur, s = cur(), n = t.steps.length, key = `${t.id}:${T.at}`, moved = T.drawn !== key;
+    T.drawn = key;
+    $("tcCount").textContent = `${T.at} / ${n}`;
+    $("tcTitle").textContent = s.title || ""; $("tcTitle").hidden = !s.title;
+    $("tcText").textContent = s.text || ""; $("tcText").hidden = !s.text; if (moved) $("tcText").scrollTop = 0;
+    $("tcBack").disabled = T.at === 1;
+    $("tcNext").textContent = T.at === n ? "Done" : "Next";
+    drawDots(); drawFollow(); drawAsk(moved);
+    if (moved && !$("tcFbText").value.trim()) closeFeedback();   // a half-written note survives the presenter moving on
+    drawLoop();
+  }
+  function drawDots() {
+    const t = T.cur, dots = $("tcDots"); dots.textContent = "";
+    t.steps.forEach((st, k) => {
+      const b = document.createElement("button"), ans = t.answers.has(k + 1);
+      b.className = `${k + 1 === T.at ? "on" : ""}${ans ? " ans" : ""}`.trim(); b.title = `${k + 1} · ${st.title || ""}${ans ? " · answered" : ""}`; b.setAttribute("aria-label", `step ${k + 1}${ans ? ", answered" : ""}`);
+      b.onclick = () => nav(k + 1); dots.appendChild(b);
+    });
+  }
+  // Who is presenting, always: "presented by X" on a self-paced tour, "● following X" while X drives and you're with
+  // them, and a chip back to X's step once you step away.
+  function drawFollow() {
+    const f = $("tcFollow"), t = T.cur; if (!t) return;
+    f.textContent = "";
+    const who = () => { const b = document.createElement("b"); b.className = "pname"; b.style.color = ptrOf(t.presenter).ink; b.textContent = t.presenter; return b; };
+    const by = document.createElement("span"); by.className = "by";
+    if (!t.driven) { by.append("presented by ", who()); f.appendChild(by); return; }
+    if (T.following) { const l = document.createElement("span"); l.className = "live"; l.textContent = "● following"; by.append(l, " ", who()); f.appendChild(by); return; }
+    const b = document.createElement("button"); b.id = "tcRejoin"; b.title = `Go to the step ${t.presenter} is on`;
+    b.textContent = `${t.presenter} is on ${t.agentAt}/${t.steps.length} · ↩ back to live`; b.onclick = rejoin; f.appendChild(b);
+  }
+  // A step that asks: the question, ✓ keep, ✎ change → and a one-line field. Shown only when the server takes answers.
+  function drawAsk(moved) {
+    const s = cur(), q = s && s.ask && String(s.ask.question || "").trim();
+    $("tcAsk").hidden = !q;
+    if (moved) { $("tcWhat").value = ""; $("tcWhat").classList.remove("want"); $("tcAns").textContent = ""; }
+    if (!q) return;
+    $("tcQ").textContent = q;
+    $("tcAsk").querySelector(".tc-pick").hidden = !canAnswer;
+    if (!canAnswer && !$("tcAns").textContent) $("tcAns").textContent = probe ? "" : "Answer with 💬 Feedback below.";
+  }
+  // The feedback loop: every comment on this step (from the card or the panel), every answer, and the presenter's
+  // replies to them (board_say reply_to keeps the step), oldest first.
+  const loops = new Map();   // "tour:step" → items
+  function loopAdd(item) {
+    const on = item && item.on; if (!on || typeof on !== "object" || !on.tour || !on.step) return;
+    const k = `${on.tour}:${on.step}`, list = loops.get(k) || [];
+    if (list.some((x) => x.id === item.id)) return;
+    list.push(item); loops.set(k, list);
+    if (T.cur && `${T.cur.id}:${T.at}` === k) { drawLoop(); placeTour(); }
+  }
+  function drawLoop() {
+    const box = $("tcLoop"); box.textContent = "";
+    if (!T.cur) return;
+    for (const it of loops.get(`${T.cur.id}:${T.at}`) || []) {
+      const d = document.createElement("div"), agent = it.author === "claude", b = document.createElement("b");
+      d.className = `m${agent ? " agent" : ""}`;
+      b.textContent = agent ? presName(it.presenter) : isMe(it.author) ? "You" : nameOf(it.author);
+      b.style.color = agent ? ptrOf(it.presenter).ink : isMe(it.author) ? "" : inkOf(nameOf(it.author));
+      d.append(b, it.op === "answer" ? (it.pick === "keep" ? `✓ keep${it.text ? ` · ${it.text}` : ""}` : `✎ change → ${it.text}`) : String(it.text || ""));
+      box.appendChild(d);
+    }
+    box.scrollTop = box.scrollHeight;
+  }
+  function openFeedback() { $("tcFbOpen").hidden = true; $("tcFb").hidden = false; $("tcFbText").focus(); placeTour(); }
+  function closeFeedback() { $("tcFb").hidden = true; $("tcFbOpen").hidden = probe || !onServer; $("tcFbText").value = ""; }
+  async function sendFeedback() {
+    const f = $("tcFbText"), text = f.value.trim(), on = stepOn();
+    if (!text || !on || probe || !onServer) return;
+    f.value = ""; $("tcFbSend").disabled = true;
+    try { await post(text, on); f.focus(); } catch (e) { f.value = text; $("tcAns").textContent = "Not sent: the live server is down."; }
+    $("tcFbSend").disabled = false;
+  }
+  async function sendAnswer(pick) {
+    const t = T.cur, s = cur(), step = T.at, w = $("tcWhat");
+    if (!t || !s || !s.ask || !canAnswer || probe || !onServer) return;
+    const text = w.value.trim();
+    if (pick === "change" && !text) { w.classList.add("want"); w.focus(); $("tcAns").textContent = "Say what to change, then press ✎ change or Enter."; return; }
+    w.classList.remove("want");
+    try {
+      const r = await fetch("/api/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tour_id: t.id, step, pick, text, name: me, c: cid }) });
+      const it = await r.json(); if (!r.ok) throw new Error(it.error || `HTTP ${r.status}`);
+      if (!seen.has(it.id)) { seen.add(it.id); answerOp(it); }
+      if (T.cur === t && T.at === step) { w.value = ""; $("tcAns").textContent = `Sent to ${t.presenter}.`; }
+    } catch (e) { if (T.cur === t && T.at === step) $("tcAns").textContent = `Not sent: ${e.message}`; }
+  }
+  // The panel's list of steps: the one on screen highlighted, the presenter's step tagged, answered steps ticked. A click
+  // jumps (or resumes) there.
+  function drawTourList() {
+    const t = T.cur || T.latest, rb = $("tourResume");
+    $("tourBox").classList.toggle("show", !!t);
+    if (rb) rb.style.display = T.latest && !T.cur ? "" : "none";
+    if (!t) return;
+    $("tourTitle").textContent = t.title;
+    $("tourGo").textContent = T.cur ? "× leave" : "▶ Resume tour";
+    $("tourGo").onclick = () => (T.cur ? exitTour("exit") : resume());
+    const ol = $("tourSteps"); ol.textContent = "";
+    t.steps.forEach((s, k) => {
+      const li = document.createElement("li"), n = k + 1;
+      li.className = T.cur === t && n === T.at ? "cur" : "";
+      li.innerHTML = `<span class="n">${n}</span><span class="t"></span>`;
+      li.querySelector(".t").textContent = s.title || s.text || `step ${n}`;
+      if (t.answers.has(n)) { const a = document.createElement("span"); a.className = "ans"; a.textContent = "✓"; a.title = "answered"; li.appendChild(a); }
+      if (t.driven && n === t.agentAt) { const w = document.createElement("span"); w.className = "who"; w.textContent = t.presenter; w.style.background = ptrOf(t.presenter).ink; li.appendChild(w); }
+      li.onclick = () => (T.cur === t ? nav(n) : resume(n));
+      ol.appendChild(li);
+    });
+    const c = ol.querySelector(".cur");
+    if (c && (c.offsetTop < ol.scrollTop || c.offsetTop + c.offsetHeight > ol.scrollTop + ol.clientHeight)) ol.scrollTop = c.offsetTop - 6;
+  }
+
+  /* the camera and the spotlight */
+  // Fit the step's target beside the card: the card's side first (right on a wide board, below on a narrow one), then the
+  // target into what's left, target and card centred together. Zoom capped at 115%, as focus caps it.
+  function frameStep(then) {
+    const s = cur(), g = s && resolve(s.target);
+    if (!g || !g.r) { T.gliding = false; placeTour(); if (then) then(); return; }
+    const st = api.getAppState(), c = $("tourCard"), cw = c.offsetWidth, ch = c.offsetHeight, wide = st.width >= 640;
+    const top = 64, bot = 58, pad = 20, P = HOLE + 12, [x0, y0, x1, y1] = g.r, w = Math.max(1, x1 - x0), h = Math.max(1, y1 - y0);
+    const aw = st.width - 2 * pad - (wide ? cw + GAP : 0), ah = st.height - top - bot - (wide ? 0 : ch + GAP);
+    const z = clamp(Math.min((aw - 2 * P) / w, (ah - 2 * P) / h), .1, 1.15), hw = w * z + 2 * HOLE, hh = h * z + 2 * HOLE;
+    const cx = wide ? Math.max(pad + P - HOLE, (st.width - hw - GAP - cw) / 2) + hw / 2 : st.width / 2;
+    const cy = wide ? top + (st.height - top - bot) / 2 : top + Math.max(P - HOLE, (st.height - top - bot - hh - GAP - ch) / 2) + hh / 2;
+    T.side = wide ? "right" : "below"; T.gliding = true;
+    tween({ z, sx: cx / z - (x0 + x1) / 2, sy: cy / z - (y0 + y1) / 2 }, (done) => { T.gliding = false; placeTour(); if (done && then) then(); });
+  }
+  // The dim covers the canvas only (the panel stays bright); the cut-out is the target's viewport rect plus HOLE px.
+  function placeTour(st) {
+    if (!T.cur || !api) return;
+    st = st || api.getAppState();
+    const cv = canvasRect(), s = cur(), g = resolve(s.target), dim = $("spotDim");
+    dim.setAttribute("x", cv.left); dim.setAttribute("y", cv.top); dim.setAttribute("width", cv.width); dim.setAttribute("height", cv.height);
+    let h = null;
+    if (g.r) { const a = toView(g.r[0], g.r[1], st), b = toView(g.r[2], g.r[3], st); h = { x: a.x - HOLE, y: a.y - HOLE, w: b.x - a.x + 2 * HOLE, h: b.y - a.y + 2 * HOLE }; }
+    for (const id of ["spotHole", "spotRing"]) {
+      const el = $(id); el.style.display = h ? "" : "none";
+      if (h) { el.setAttribute("x", h.x); el.setAttribute("y", h.y); el.setAttribute("width", Math.max(0, h.w)); el.setAttribute("height", Math.max(0, h.h)); }
+    }
+    T.hole = h;
+    placeCard(h, cv);
+  }
+  // Beside the cut-out on the side with room: right, else left, else below, else above. While the camera glides the card
+  // keeps the side the glide was planned for, so it doesn't hop as the cut-out moves in.
+  function placeCard(h, cv) {
+    const c = $("tourCard"), w = c.offsetWidth, ht = c.offsetHeight, M = 12;
+    let top = cv.top + 58, bot = cv.bottom - 58;   // clear of Excalidraw's toolbar and zoom bar (and the walk buttons)
+    if (bot - top < ht) { top = cv.top + M; bot = cv.bottom - M; }
+    const fit = { right: () => h.x + h.w + GAP + w <= cv.right - M, left: () => h.x - GAP - w >= cv.left + M,
+      below: () => h.y + h.h + GAP + ht <= bot, above: () => h.y - GAP - ht >= top };
+    const side = !h ? null : T.gliding && T.side ? T.side : T.side && fit[T.side]() ? T.side : ["right", "left", "below", "above"].find((k) => fit[k]()) || T.side || "below";
+    if (!T.gliding) T.side = side;
+    let x, y;
+    if (!h) { x = cv.left + (cv.width - w) / 2; y = cv.top + (cv.height - ht) / 2; }
+    else if (side === "right" || side === "left") { x = side === "right" ? h.x + h.w + GAP : h.x - GAP - w; y = h.y + h.h / 2 - ht / 2; }
+    else { y = side === "below" ? h.y + h.h + GAP : h.y - GAP - ht; x = h.x + h.w / 2 - w / 2; }
+    x = clamp(x, cv.left + M, cv.right - M - w); y = clamp(y, top, Math.max(top, bot - ht));
+    c.style.left = `${Math.round(x)}px`; c.style.top = `${Math.round(y)}px`;
+    const n = $("tcNotch"); n.className = side ? `n-${side}` : "";
+    if (side === "right" || side === "left") { n.style.top = `${clamp(h.y + h.h / 2 - y, 20, ht - 20) - 7}px`; n.style.left = side === "left" ? "auto" : ""; }
+    else if (side) { n.style.left = `${clamp(h.x + h.w / 2 - x, 20, w - 20) - 7}px`; n.style.top = side === "above" ? "auto" : ""; }
+  }
+
+  /* moving through the tour */
+  function go(i) {
+    const t = T.cur; if (!t) return;
+    T.at = clamp(i, 1, t.steps.length);
+    if (!probe) try { localStorage.setItem(TOUR_KEY, JSON.stringify({ id: t.id, at: T.at })); } catch (e) { /* ignore */ }
+    drawCard(); drawTourList(); refreshOn();
+    // The pointer plays the step on screen, unless the presenter is driving and you stepped away: then it stays with them.
+    const p = ptrOf(t.presenter), mine = !t.driven || T.following, at = T.at;
+    showPtr(p);
+    if (mine) {
+      stopBeats(p); p.chat.classList.remove("show"); p.el.classList.remove("talking");   // the last step's words go now
+      // The pointer is on screen from a step's first moment. It heads for the step's first beat while the camera
+      // glides; a page that has only just opened the tour gets it parked there at once.
+      const first = beatsOf(t.steps[at - 1])[0], a = first && anchorOf(first.target);
+      if (a) { if (!p.at) p.at = a.p; placeOne(p); sayAt(p, first.target, "", ++p.run, false); }
+    }
+    frameStep(() => { if (mine && T.cur === t && T.at === at) playBeats(t, at, true); });
+    placeTour();   // now, not on the glide's first frame: a tab in the background gets no animation frames until it's shown
+  }
+  function startTour(t, i, following = true) {
+    const was = T.cur && T.cur !== t ? tourPtr() : null;
+    T.cur = t; T.left.delete(t.id); T.following = following; T.side = null;
+    if (was && was !== tourPtr()) { stopBeats(was); was.chat.classList.remove("show"); parkThenFade(was, 0); }   // another tour took over
+    document.body.classList.add("touring");
+    $("spot").classList.add("show"); $("tourCard").classList.add("show");
+    sizeCard(); go(i);
+  }
+  function exitTour(action) {
+    const t = T.cur; if (!t) return;
+    if (action) report(action);
+    const p = ptrOf(t.presenter);
+    T.cur = null; T.left.add(t.id); T.side = null; T.drawn = null;
+    // The presenter's pointer stays where it is, words gone, then fades after 60 s like any gesture outside a tour.
+    stopBeats(p); p.chat.classList.remove("show"); p.el.classList.remove("talking");
+    if (p.el.classList.contains("show")) parkThenFade(p, 0);
+    document.body.classList.remove("touring");
+    $("spot").classList.remove("show"); $("tourCard").classList.remove("show");
+    drawTourList(); refreshOn();
+  }
+  // This page's own moves (a click, a key, a dot, the list, Resume, the chip). The presenter's moves never come through here.
+  function nav(i) {
+    const t = T.cur; if (!t) return;
+    i = clamp(i, 1, t.steps.length); if (i === T.at) return;
+    T.following = !t.driven || i === t.agentAt;
+    go(i); report("step");
+  }
+  function next() {
+    if (!T.cur || finishBeats()) return;   // the first Next finishes the step's beats; the next one moves on
+    if (T.at >= T.cur.steps.length) return exitTour("done");
+    nav(T.at + 1);
+  }
+  function rejoin() { if (!T.cur) return; T.following = true; go(T.cur.agentAt); report("step"); }
+  function resume(i) {
+    const t = T.latest; if (!t) return;
+    let at = i || (t.driven ? t.agentAt : 1);
+    if (!i && !t.driven) try { const m = JSON.parse(localStorage.getItem(TOUR_KEY) || "null"); if (m && m.id === t.id) at = m.at; } catch (e) { /* ignore */ }
+    startTour(t, at, !t.driven || at === t.agentAt); report("step");
+  }
+  // Where this page is, for the presenter: one quiet TOUR line in events.log (the server waits for the clicks to stop). Never
+  // from a ?probe page, and only to a server that takes it: an older one would 404, and that 404 is a console error.
+  function report(action) {
+    const t = T.cur; if (!t || probe || !onServer) return;
+    const body = JSON.stringify({ c: cid, name: me, tour_id: t.id, title: t.title, index: T.at, total: t.steps.length, action });
+    canReport.then((ok) => ok && fetch("/api/tour", { method: "POST", headers: { "content-type": "application/json" }, body }).catch(() => {}));
+  }
+
+  /* the ops. During the first poll the record replays: a tour, a step or a gesture from before this page loaded only
+     updates what Resume knows (and the ticks), so a reload never restarts a finished or old tour. */
+  function tourOp(op) {
+    const steps = (Array.isArray(op.steps) ? op.steps : []).filter((s) => s && typeof s === "object");
+    if (!steps.length) return;
+    const t = { id: String(op.tour_id || op.id), title: String(op.title || "Tour"), steps, agentAt: 1, driven: false, presenter: presName(op.presenter), answers: new Map() };
+    ptrOf(t.presenter);   // even in the replay: colours follow the record's order
+    tours.set(t.id, t); T.latest = t;
+    if (firstPoll) drawTourList(); else startTour(t, 1);
+  }
+  function tourStepOp(op) {
+    const t = op.tour_id ? tours.get(String(op.tour_id)) : T.latest; if (!t) return;
+    t.agentAt = clamp(Math.round(+op.index) || 1, 1, t.steps.length); t.driven = true; T.latest = t;   // Resume opens the tour driven last
+    if (!firstPoll) {
+      if (T.cur === t) {
+        if (T.following || T.at === t.agentAt) { T.following = true; go(t.agentAt); }
+        else { drawFollow(); playBeats(t, t.agentAt, false); }   // stepped away: the pointer moves, your camera doesn't
+      } else if (T.cur && T.following) startTour(t, t.agentAt);   // following follows whoever drove last
+      else if (!T.cur && !T.left.has(t.id)) startTour(t, t.agentAt);   // reloaded mid-tour: the presenter moving on brings you back
+    }
+    drawTourList();
+  }
+  function pointOp(op) {
+    const p = ptrOf(op.presenter);   // even in the replay: colours follow the record's order
+    if (firstPoll || !api) return;
+    if (p.beats) p.beats.done = true;
+    const run = ++p.run, text = String(op.text || "");
+    // A following page pans to the gesture, but not for a guest presenter during someone else's tour: that would pull
+    // the viewer off the step. Another presenter's pointer never stops the tour's beats: each pointer has its own run.
+    const follow = !(T.cur && !T.following) && (!T.cur || inTour(p));
+    sayAt(p, op.target, text, run, follow).then(() => {
+      if (run !== p.run) return;
+      const words = Math.max(6000, text.length * 90);   // the words stay while they can be read
+      if (inTour(p)) p.fade = setTimeout(() => { if (run === p.run) { p.chat.classList.remove("show"); p.el.classList.remove("talking"); } }, words);
+      else parkThenFade(p, words);
+    });
+  }
+  function answerOp(op) {
+    const t = tours.get(String(op.tour_id)), i = Math.round(+op.step); if (!t || !(i >= 1 && i <= t.steps.length)) return;
+    t.answers.set(i, op);
+    loopAdd(op);
+    if (T.cur === t) drawDots();
+    drawTourList();
+  }
+
+  /* the presenters' pointers: the tip sits on a box's centre-left edge (or on the scene point), glides there in scene
+     coordinates (so pan and zoom carry it), then types the words at ~36 characters a second. A click on the bubble shows
+     it all. The name tag always shows. */
+  function anchorOf(t) { const g = resolve(t); return g.r ? { p: g.point ? [g.r[0], g.r[1]] : [g.r[0], (g.r[1] + g.r[3]) / 2], box: g.point ? null : g.r } : null; }
+  const beatsOf = (s) => { const pts = (Array.isArray(s.points) ? s.points : []).filter((p) => p && p.target != null && String(p.text || "").trim());
+    return pts.length ? pts : [{ target: s.target, text: s.text || s.title || "" }]; };
+  const drawTyped = (p) => { p.typedEl.textContent = p.text.slice(0, p.typed); p.restEl.textContent = p.text.slice(p.typed); };
+  // A following page pans (zoom kept) so a gesture off screen comes into view; a page that stepped away never moves.
+  function reveal([x0, y0, x1, y1]) {
+    const st = api.getAppState(), a = toView(x0, y0, st), b = toView(x1, y1, st), cv = canvasRect();
+    if (a.x >= cv.left + 40 && a.y >= cv.top + 64 && b.x <= cv.right - 40 && b.y <= cv.bottom - 64) return;
+    const z = st.zoom.value;
+    tween({ z, sx: st.width / (2 * z) - (x0 + x1) / 2, sy: st.height / (2 * z) - (y0 + y1) / 2 });
+  }
+  function showPtr(p) { clearTimeout(p.fade); p.el.classList.remove("fading"); p.el.classList.add("show"); lastPtr = p; }
+  function sayAt(p, target, text, run, follow) {
+    const a = anchorOf(target); if (!a || !api) return Promise.resolve();
+    clearTimeout(p.timer); p.skip = null; showPtr(p);
+    if (follow) reveal(a.box || [a.p[0], a.p[1], a.p[0], a.p[1]]);
+    const z = api.getAppState().zoom.value, to = a.p, from = p.at || [to[0] - 80 / z, to[1] + 70 / z];
+    p.box = a.box;
+    p.chat.classList.remove("show"); p.el.classList.remove("talking");
+    const d = Math.hypot(to[0] - from[0], to[1] - from[1]) * z, dur = d < 1 ? 0 : clamp(600 + d / 3, 600, 900), t0 = performance.now();
+    return new Promise((done) => {
+      const step = (now) => {
+        if (run !== p.run) return done();
+        const k = dur ? Math.min(1, (now - t0) / dur) : 1, e = 1 - Math.pow(1 - k, 3);
+        p.at = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e]; placeOne(p);
+        if (k < 1) frame(step); else typeOut(p, String(text || ""), run, done);
+      };
+      frame(step);
+    });
+  }
+  // The bubble's side is chosen for the whole text before typing starts, so it never hops; it then grows out of the corner
+  // nearest the pointer as the words come, like FigJam's cursor chat.
+  function typeOut(p, text, run, done) {
+    p.text = text; p.typed = 0; drawTyped(p);
+    if (!text) return done();
+    p.chat.classList.add("show"); p.el.classList.add("talking"); placeOne(p);
+    let ended = false; const end = () => { if (!ended) { ended = true; p.skip = null; done(); } };
+    p.skip = () => { clearTimeout(p.timer); p.typed = text.length; drawTyped(p); end(); };
+    const tick = () => {
+      if (run !== p.run) return end();
+      p.typed = Math.min(text.length, p.typed + 1); drawTyped(p);
+      if (p.typed < text.length) p.timer = setTimeout(tick, 28); else end();
+    };
+    p.timer = setTimeout(tick, 28);
+  }
+  // A pointer whose spot is off the board waits at the board's edge (as FigJam shows a cursor off screen), so the
+  // tour presenter's never leaves the screen, even while it glides in from the last step. A second pointer on the same
+  // spot draws just below the first, and the name tag moves left or above when the board's edge or the card is in the way.
+  function placeOne(p, st) {
+    if (!p.at || !api) return;
+    st = st || api.getAppState();
+    const cv = canvasRect(), v = toView(p.at[0], p.at[1], st);
+    v.x = clamp(v.x, cv.left + 4, cv.right - 30); v.y = clamp(v.y, cv.top + 4, cv.bottom - 36);
+    const order = [tourPtr(), ...ptrs.values()].filter((q, i, a) => q && a.indexOf(q) === i);
+    for (const q of order.slice(0, order.indexOf(p))) if (q.drawn && q.el.classList.contains("show") && Math.abs(q.drawn.x - v.x) < 22 && Math.abs(q.drawn.y - v.y) < 30) v.y = q.drawn.y + 32;
+    p.drawn = v;
+    p.el.style.left = `${v.x}px`; p.el.style.top = `${v.y}px`;
+    placeTag(p, v, cv);
+    if (p.chat.classList.contains("show")) placeBubble(p, v, st);
+    placeTag(p, v, cv);   // again, now that the bubbles are placed: on a cramped board the tag is what can still move
+    // another presenter's bubble, placed before this pointer got here, moves off its name tag
+    const tr = p.tag.getBoundingClientRect();
+    for (const q of ptrs.values()) if (q !== p && q.drawn && q.chat.classList.contains("show")) {
+      const br = q.chat.getBoundingClientRect();
+      if (br.left < tr.right && tr.left < br.right && br.top < tr.bottom && tr.top < br.bottom) placeBubble(q, q.drawn, st);
+    }
+  }
+  function placeTag(p, v, cv) {
+    const w = p.tag.offsetWidth, h = p.tag.offsetHeight, cr = T.cur ? $("tourCard").getBoundingClientRect() : null;
+    const card = cr && cr.width ? { x: cr.left, y: cr.top, w: cr.width, h: cr.height } : null;
+    const at = (l, u) => ({ x: l ? v.x - 3 + 26 - 24 - w : v.x - 3 + 20, y: u ? v.y - 2 + 31 - 33 - h : v.y - 2 + 25, w, h });
+    const hit = (r, q) => q && r.x < q.x + q.w && q.x < r.x + r.w && r.y < q.y + q.h && q.y < r.y + r.h;
+    const box = (el) => { const b = el.getBoundingClientRect(); return { x: b.left, y: b.top, w: b.width, h: b.height }; };
+    const bubbles = [...ptrs.values()].filter((q) => q.chat.classList.contains("show")).map((q) => box(q.chat));
+    const tags = [...ptrs.values()].filter((q) => q !== p && q.el.classList.contains("show")).map((q) => box(q.tag));
+    // a bubble or another name on this name is the worst (the name must show), then off the board, then on the card
+    const cost = (r) => (bubbles.some((b) => hit(r, b)) || tags.some((t) => hit(r, t)) ? 4 : 0) + (r.x < cv.left || r.x + r.w > cv.right || r.y < cv.top || r.y + r.h > cv.bottom ? 2 : 0) + (hit(r, card) ? 1 : 0);
+    const best = [[false, false], [true, false], [false, true], [true, true]].map(([l, u], i) => ({ l, u, c: cost(at(l, u)) * 10 + i })).sort((a, b) => a.c - b.c)[0];
+    p.tag.classList.toggle("l", best.l); p.tag.classList.toggle("u", best.u);
+  }
+  function placePointer(st) { for (const p of ptrs.values()) placeOne(p, st); }
+  // FigJam puts the bubble below-right of the arrow, but the tip sits on the box's left edge, so that spot covers the box.
+  // Try below-left, above-left, above-right, then under or over the box; pick the one that covers neither the box, the
+  // tour card, its own name tag nor another presenter's pointer, and moves least to stay on the canvas.
+  function placeBubble(p, v, st) {
+    const b = p.chat, rest = p.restEl, cv = canvasRect(), M = 8;
+    rest.style.display = "inline"; const w = b.offsetWidth, h = b.offsetHeight; rest.style.display = "";   // measured with all its words
+    let R = null;
+    if (p.box) { const a = toView(p.box[0], p.box[1], st), c = toView(p.box[2], p.box[3], st); R = { x: a.x - 4, y: a.y - 4, w: c.x - a.x + 8, h: c.y - a.y + 8 }; }
+    const rect = (el) => { const q = el.getBoundingClientRect(); return q.width ? { x: q.left - 3, y: q.top - 3, w: q.width + 6, h: q.height + 6 } : null; };
+    const cr = T.cur ? $("tourCard").getBoundingClientRect() : null, card = cr && cr.width ? { x: cr.left, y: cr.top, w: cr.width, h: cr.height } : null;
+    // the walk row and Export (z 1000) draw over a bubble, so a bubble keeps off them
+    const walkRow = $("buttons") && $("buttons").getClientRects().length ? rect($("buttons")) : null;
+    // The name tag must always show, so its own bubble keeps off it, and off the other presenters' tags and bubbles.
+    const keep = [rect(p.tag)];
+    for (const q of ptrs.values()) if (q !== p && q.el.classList.contains("show")) keep.push(rect(q.tag), q.chat.classList.contains("show") ? rect(q.chat) : null);
+    const cx = (x) => clamp(x, cv.left + M, cv.right - M - w), cy = (y) => clamp(y, cv.top + M, cv.bottom - M - h);
+    const cand = [["br", v.x + 18, v.y + 28], ["bl", v.x - 8 - w, v.y + 18], ["tl", v.x - 8 - w, v.y - 8 - h], ["tr", v.x + 18, v.y - 8 - h]];
+    if (R) {   // under or over the box (16: clear of the spotlight's ring), also slid sideways off the tour card
+      const xs = [v.x - 14, ...(card ? [card.x - 12 - w, card.x + card.w + 12] : [])];
+      for (const x of xs) cand.push(["ub", x, R.y + R.h + 16], ["ob", x, R.y - 16 - h]);
+    }
+    const over = (x, y, r) => !r ? 0 : Math.max(0, Math.min(x + w, r.x + r.w) - Math.max(x, r.x)) * Math.max(0, Math.min(y + h, r.y + r.h) - Math.max(y, r.y));
+    let best = null;
+    // Covering the box hides what's being talked about, and covering the card hides the words and Back / Next: both cost
+    // the same. The rest of the spotlight costs less but still counts: without it a bubble sat on the next box over. A
+    // name tag is a hard rule (the name always shows): it's small, so at the same rate a bubble sat on its own tag
+    // rather than on the spotlight, hence 20× the rate.
+    const hole = T.cur && T.hole;
+    cand.forEach(([k, x, y], i) => {
+      const X = cx(x), Y = cy(y), score = 50 * (over(X, Y, R) + over(X, Y, card) + over(X, Y, walkRow)) + 1000 * keep.reduce((n, r) => n + over(X, Y, r), 0) + 12 * over(X, Y, hole) + 8 * (Math.abs(X - x) + Math.abs(Y - y)) + i;
+      if (!best || score < best.score) best = { k, X, Y, score };
+    });
+    // pin the corner nearest the pointer (left or right edge, top or bottom), so the typed words grow away from it
+    const right = ["bl", "tl"].includes(best.k) || (["ub", "ob"].includes(best.k) && Math.abs(best.X + w - v.x) < Math.abs(best.X - v.x)), up = ["tl", "tr", "ob"].includes(best.k);
+    b.className = `cchat show ${best.k}`;
+    b.style.left = right ? "auto" : `${Math.round(best.X)}px`; b.style.right = right ? `${Math.round(innerWidth - best.X - w)}px` : "auto";
+    b.style.top = up ? "auto" : `${Math.round(best.Y)}px`; b.style.bottom = up ? `${Math.round(innerHeight - best.Y - h)}px` : "auto";
+  }
+  // A step's beats: the presenter's pointer visits each `points` target in turn and says its words, with a reading pause
+  // between (≥ 1.5 s). A step with no points has one beat: its target, its text.
+  async function playBeats(t, i, follow) {
+    const s = t.steps[i - 1]; if (!s) return;
+    const p = ptrOf(t.presenter), list = beatsOf(s);
+    const run = ++p.run, b = p.beats = { tour: t.id, step: i, list, k: 0, done: false };
+    for (let k = 0; k < list.length; k++) {
+      b.k = k;
+      await sayAt(p, list[k].target, list[k].text, run, follow);
+      if (run !== p.run) return;
+      if (k < list.length - 1) { await sleep(Math.max(1500, String(list[k].text).length * 50)); if (run !== p.run) return; }
+    }
+    b.done = true;
+  }
+  // Next while the step's beats still play: jump to the last beat, words in full. Returns false when there's nothing to finish.
+  function finishBeats() {
+    const p = tourPtr(), b = p && p.beats;
+    if (!T.cur || !b || b.done || b.tour !== T.cur.id || b.step !== T.at) return false;
+    b.done = true; b.k = b.list.length - 1; p.run++; clearTimeout(p.timer); p.skip = null;
+    const last = b.list[b.k], a = anchorOf(last.target);
+    if (a) {
+      p.at = a.p; p.box = a.box; p.text = String(last.text || ""); p.typed = p.text.length; drawTyped(p);
+      showPtr(p); p.el.classList.toggle("talking", !!p.text); p.chat.classList.toggle("show", !!p.text); placeOne(p);
+    }
+    return true;
+  }
+  function stopBeats(p) { if (p.beats) p.beats.done = true; p.run++; clearTimeout(p.timer); p.skip = null; }
+  // Outside a tour: the words go once read (`words` ms; 0 = now), the pointer stays parked where it last pointed,
+  // and 60 s after it got there it fades. A new gesture, or its own tour starting, cancels the fade.
+  function parkThenFade(p, words) {
+    clearTimeout(p.fade); const run = p.run, t0 = Date.now();
+    const fade = () => {
+      if (run !== p.run || inTour(p)) return;
+      p.el.classList.add("fading");
+      p.fade = setTimeout(() => { if (run === p.run && !inTour(p)) hidePtr(p); }, 650);
+    };
+    const later = () => { p.fade = setTimeout(fade, Math.max(0, PARK_MS - (Date.now() - t0))); };
+    if (words) p.fade = setTimeout(() => { if (run !== p.run) return; p.chat.classList.remove("show"); p.el.classList.remove("talking"); later(); }, words);
+    else later();
+  }
+  function hidePtr(p) {
+    stopBeats(p); clearTimeout(p.fade); p.at = null; p.text = ""; p.typed = 0;
+    p.el.classList.remove("show", "talking", "fading"); p.chat.classList.remove("show");
+  }
+  const ptrState = (p) => {
+    const r = (el) => { const q = el.getBoundingClientRect(); return { x: q.left, y: q.top, w: q.width, h: q.height }; }, shown = p.el.classList.contains("show");
+    return { name: p.name, ink: p.ink, id: p.el.id, shown, fading: p.el.classList.contains("fading"), at: p.at, text: p.text, typed: p.typed, talking: p.chat.classList.contains("show"),
+      tag: { text: p.tag.textContent, shown: shown && getComputedStyle(p.tag).display !== "none" && p.tag.offsetWidth > 0, rect: r(p.tag) },
+      bubble: p.chat.classList.contains("show") ? r(p.chat) : null, beats: p.beats ? { step: p.beats.step, k: p.beats.k, n: p.beats.list.length, done: p.beats.done } : null };
+  };
+
+  function wireTour() {
+    const rb = document.createElement("button");
+    rb.id = "tourResume"; rb.textContent = "▶ Resume tour"; rb.style.display = "none"; rb.onclick = () => resume();
+    $("buttons").prepend(rb);
+    $("tcBack").onclick = () => nav(T.at - 1); $("tcNext").onclick = next; $("tcClose").onclick = () => exitTour("exit");
+    $("tcKeep").onclick = () => sendAnswer("keep"); $("tcChange").onclick = () => sendAnswer("change");
+    $("tcWhat").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendAnswer("change"); } else if (e.key === "Escape") e.target.blur(); });
+    $("tcWhat").addEventListener("input", () => $("tcWhat").classList.remove("want"));
+    $("tcFbOpen").onclick = openFeedback; $("tcFbSend").onclick = sendFeedback;
+    $("tcFbText").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendFeedback(); } else if (e.key === "Escape") { closeFeedback(); placeTour(); } });
+    closeFeedback();
+    // ← → Esc while a tour is on. Captured before Excalidraw, which would nudge a selected box with the arrows (a scene edit
+    // everyone gets). Typing in the composer, the sticky or a box's text keeps its keys; Esc with a selection deselects.
+    window.addEventListener("keydown", (e) => {
+      if (!T.cur || !api || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = e.target, st = api.getAppState();
+      if ((el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) || st.editingElement || $("ink").classList.contains("open")) return;
+      if (e.key === "ArrowRight") { if (!finishBeats() && T.at < T.cur.steps.length) nav(T.at + 1); }
+      else if (e.key === "ArrowLeft") nav(T.at - 1);
+      else if (e.key === "Escape") { if (Object.keys(st.selectedElementIds || {}).length) return; exitTour("exit"); }
+      else return;
+      e.preventDefault(); e.stopImmediatePropagation();
+    }, true);
+    window.addEventListener("resize", () => { if (T.cur) sizeCard(); placeTour(); placePointer(); });
+    if (!probe) {
+      const hello = fetch("/api/hello", { cache: "no-store" }).then((r) => r.json()).catch(() => ({}));
+      canReport = hello.then((h) => !!h.tour);
+      hello.then((h) => { canAnswer = !!h.answer; if (T.cur) { drawAsk(false); placeTour(); } });
+    }
+    Object.assign(window.__board, {
+      tour: () => ({ active: !!T.cur, id: (T.cur || T.latest || {}).id || null, at: T.at, total: T.cur ? T.cur.steps.length : 0, following: T.following,
+        driven: !!(T.cur && T.cur.driven), agentAt: T.cur ? T.cur.agentAt : null, side: T.side, resumable: !!(T.latest && !T.cur),
+        presenter: (T.cur || T.latest || {}).presenter || null, answered: [...((T.cur || T.latest || {}).answers || new Map()).keys()] }),
+      // the tour presenter's pointer during a tour, else the one that moved last (or a named one); every pointer
+      pointer: (name) => ptrState(name ? ptrOf(name) : tourPtr() || lastPtr || ptrOf("Claude")),
+      pointers: () => [...ptrs.values()].map(ptrState),
+    });
+  }
+
+  function render(item) {
+    const div = document.createElement("div");
+    div.className = `msg ${item.author === "claude" ? "claude" : "person"}${item.author === "claude" || isMe(item.author) ? "" : " peer"}`;
+    const on = onOf(item.on);
+    const time = new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    // a reply from a named presenter says its name, in its pointer's colour
+    const agent = item.author === "claude", who = agent ? presName(item.presenter) : isMe(item.author) ? "You" : nameOf(item.author);
+    div.innerHTML = `<div class="meta"><b${who === "Claude" || who === "You" ? "" : ` style="color:${agent ? ptrOf(who).ink : inkOf(who)}"`}>${who.replace(/</g, "&lt;")}</b> · ${time}${on ? ` · <a href="#" data-ids="${(on.ids || [on.id]).join(",")}">${String(on.label).replace(/</g, "&lt;")}</a>` : ""}</div><div class="body"></div>`;
+    div.querySelector(".body").textContent = item.text;
+    const a = div.querySelector("a"); if (a) a.onclick = (ev) => { ev.preventDefault(); show(on); };
+    if (on) addPin(on, item, div);
+    loopAdd(item);   // a comment on a tour step (or a reply to one) joins that step's feedback loop on the card
+    $("thread").appendChild(div); $("thread").scrollTop = $("thread").scrollHeight;
+    if (item.author === "claude" && !firstPoll) { div.classList.add("fresh"); setTimeout(() => div.classList.remove("fresh"), 2500); }
+  }
+  // Every open page applies Claude's note and arrow ops itself, and Excalidraw gives each label a random id, so three pages
+  // would leave three labels on one note once their scenes merge. Name the label after its container: every page agrees.
+  const fixedLabel = (made, ref) => {
+    const lab = made.find((e) => e.type === "text" && e.containerId === ref), id = `${ref}__label`;
+    if (!lab) return made;
+    return made.map((e) => e.id === lab.id ? { ...e, id } : e.id === ref ? { ...e, boundElements: (e.boundElements || []).map((b) => b.id === lab.id ? { ...b, id } : b) } : e);
+  };
+  // The agent's arrows lie under the boxes (just above any locked backgrounds): a box a line passes through keeps its
+  // clicks and hides that stretch of line. Marked in customData, so every page, and the server's order, layers alike.
+  const UNDER = (e) => e.customData && e.customData.z === "under";
+  const layer = (list) => { if (!list.some(UNDER)) return list; const rest = list.filter((e) => !UNDER(e)), at = rest.reduce((k, e, i) => (e.locked ? i + 1 : k), 0);
+    return [...rest.slice(0, at), ...list.filter(UNDER), ...rest.slice(at)]; };
+  function applyOp(op) {
+    // Ops rewrite the whole scene, so they carry the deleted elements too: a delete must stay a delete on every page,
+    // and a note someone deleted must not come back when a new page replays the thread.
+    const all = api.getSceneElementsIncludingDeleted(), els = all.filter((e) => !e.isDeleted);
+    if (op.op === "note" && op.ref && !all.some((e) => e.id === op.ref)) {
+      const n = ExcalidrawLib.convertToExcalidrawElements([{ type: "rectangle", id: op.ref, x: op.x, y: op.y, width: op.w || 260, height: op.h || 90, roundness: { type: 3 },
+        strokeColor: op.color === "orange" ? "#e8590c" : BLUE, backgroundColor: op.color === "orange" ? "#fff4e6" : "#e7f5ff", fillStyle: "solid", strokeWidth: 1.5, roughness: 1,
+        label: { text: op.text, fontSize: 15, fontFamily: HAND, strokeColor: op.color === "orange" ? "#d9480f" : BLUE_INK, textAlign: "left", verticalAlign: "middle" } }], { regenerateIds: false });
+      api.updateScene({ elements: [...all, ...fixedLabel(n, op.ref)] });
+    } else if (op.op === "arrow" && op.ref && !all.some((e) => e.id === op.ref)) {
+      const f = els.find((e) => e.id === op.from), t = els.find((e) => e.id === op.to); if (!f || !t) return;
+      // Edge to edge, not centre to centre: a line through a box's face took the clicks meant for the box,
+      // so a row of notes went unclickable. The arrow leaves f where the line between the centres crosses f's border (+8 px).
+      const mid = (b) => [b.x + b.width / 2, b.y + b.height / 2];
+      const edge = (b, [tx, ty]) => { const [cx, cy] = mid(b), dx = tx - cx, dy = ty - cy;
+        const k = Math.min(1, 1 / Math.max(Math.abs(dx) / (b.width / 2 + 8), Math.abs(dy) / (b.height / 2 + 8), 1e-9)); return [cx + dx * k, cy + dy * k]; };
+      const [sx, sy] = edge(f, mid(t)), [ex, ey] = edge(t, mid(f));
+      const a = ExcalidrawLib.convertToExcalidrawElements([{ type: "arrow", id: op.ref, x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]], strokeColor: op.color === "orange" ? "#e8590c" : BLUE,
+        strokeWidth: 2, roughness: 1, roundness: null, endArrowhead: "arrow", start: { id: op.from }, end: { id: op.to },
+        ...(op.label ? { label: { text: op.label, fontSize: 14, fontFamily: HAND } } : {}) }], { regenerateIds: false });
+      api.updateScene({ elements: layer([...all, ...fixedLabel(a, op.ref).map((e) => ({ ...e, customData: { ...(e.customData || {}), z: "under" } }))]) });
+    } else if (op.op === "edit") {
+      const target = els.find((e) => e.id === `${op.target}__title`) || els.find((e) => e.type === "text" && e.containerId === op.target) || els.find((e) => e.id === op.target && e.type === "text");
+      // Every new page replays the whole thread: an edit someone made after this op must win, not be put back.
+      if (target && target.text !== op.text && !(target.updated > Date.parse(op.ts))) api.updateScene({ elements: all.map((e) => (e.id === target.id ? ExcalidrawLib.newElementWith(e, { text: op.text, originalText: op.text }) : e)) });
+    } else if (op.op === "delete") {
+      api.updateScene({ elements: all.map((e) => !e.isDeleted && !(e.updated > Date.parse(op.ts)) && (e.id === op.target || e.containerId === op.target || (e.groupIds || []).includes(`${op.target}__grp`)) ? ExcalidrawLib.newElementWith(e, { isDeleted: true }) : e) });
+    }
+    if (op.op === "focus" && Date.parse(op.ts) > LOADED_AT - 4000) view([].concat(op.target), true);
+    if (op.op === "tour") tourOp(op);
+    else if (op.op === "tour_step") tourStepOp(op);
+    else if (op.op === "point") pointOp(op);
+    else if (op.op === "answer") answerOp(op);   // a ✓ keep / ✎ change on a step
+  }
+  let pollTimer = null, polling = false, pollAgain = false;
+  async function poll() {
+    if (polling) { pollAgain = true; return; }
+    polling = true; clearTimeout(pollTimer);
+    try {
+      const { items } = await (await fetch("/api/thread", { cache: "no-store" })).json();
+      $("dot").className = "dot on"; $("conn").textContent = here();
+      for (const it of items) {
+        if (seen.has(it.id)) continue; seen.add(it.id);
+        if (it.kind === "comment") render(it);
+        else if (it.kind === "op") { try { applyOp(it); } catch (e) { console.error("[live] op failed", e, it); } }
+      }
+      firstPoll = false;
+    } catch (e) { $("dot").className = "dot off"; $("conn").textContent = "reconnecting…"; }
+    polling = false;
+    pollTimer = setTimeout(poll, pollAgain ? 0 : 1500); pollAgain = false;
+  }
+  async function post(text, on) {
+    const it = await (await fetch("/api/comment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, on, name: me }) })).json();
+    if (!seen.has(it.id)) { seen.add(it.id); render(it); }
+  }
+  async function send() {
+    const text = $("box").value.trim(); if (!text) return;
+    $("box").value = ""; $("send").disabled = true;
+    try { await post(text, sel); } catch (e) { $("box").value = text; setStatus("not sent: the live server is down"); }
+    $("send").disabled = false; $("box").focus();
+  }
+  return {
+    start(a) {
+      api = a;
+      if (!onServer) { $("conn").textContent = "offline: open it from the live server"; return; }
+      setTimeout(() => pullFiles(true), 300);   // pictures pasted on the board, from live/files (once the scene is in)
+      setInterval(() => { if (!probe && me) pushFiles(); }, 2000);   // a pasted picture can finish loading after the last change
+      $("send").onclick = send;
+      $("box").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+      const relayout = () => setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
+      $("panelToggle").onclick = () => { document.body.classList.add("panel-closed"); relayout(); };
+      $("openPanel").onclick = () => { document.body.classList.remove("panel-closed"); relayout(); };
+      window.__board.view = (ids) => view(ids, true);
+      window.__board.pins = () => [...pins.keys()];
+      window.__board.peers = () => [...peers.values()].map((p) => p.name);
+      window.__board.me = () => me;
+      penCursor(); areaDrag(); wireTour();
+      select(null); poll();
+      const join = () => { if (!probe) listen(); queuePush(); };
+      if (me) join(); else askName(join);
+    },
+    onChange(elements, appState) {
+      const ids = Object.keys(appState.selectedElementIds || {});
+      const next = ids.length ? ids[0] : null, boxes = boxIds(ids);
+      const key = boxes.length > 1 ? boxes.join(",") : (labelOf(next) || {}).id;
+      if ((sel && !sel.tour ? (sel.ids ? sel.ids.join(",") : sel.id) : undefined) !== key) select(next, boxes);
+      placePins(appState); if (ink.rect) placeInk(appState);
+      placeTour(appState); placePointer(appState);
+      queuePush();
+    },
+    pushScene() { if (onServer && !probe && api && me) pushNow(true); },   // the page is closing: send what's left now
+    pointer,
+    onServer, probe,
+    // The scene to start from: the server's when it has one (a new tab or a teammate joins what's there, never a fresh
+    // seed), else null. `cached` is this browser's own copy; an element it holds newer than the server's is kept and sent.
+    async load(cached) {
+      if (!onServer) return null;
+      try {
+        const { elements } = await (await fetch("/api/scene", { cache: "no-store" })).json();
+        if (!elements || !elements.length) return null;
+        const mine = new Map((cached || []).map((e) => [e.id, e]));
+        for (const e of elements) sent.set(e.id, e.version);
+        const out = ExcalidrawLib.restoreElements(elements, null, { repairBindings: true }).map((e) => { const l = mine.get(e.id); return l && newer(l, e) ? l : e; });
+        const dropped = [...mine.values()].filter((e) => !e.isDeleted && !sent.has(e.id)).length;
+        if (dropped) console.info(`[live] ${dropped} element(s) only in this browser's old copy were left out; the server's board wins`);
+        return layer(out);
+      } catch (e) { console.error("[live] could not load the server's board", e); return null; }
+    },
+  };
+})();
+
+async function start() {
+  let initialElements;
+  let seededFresh;
+  let cached = null;
+  try { const raw = localStorage.getItem(ELEMENTS_KEY); cached = raw === null ? null : JSON.parse(raw); } catch (e) { /* checked below */ }
+  const shared = await live.load(cached);   // on the live server, everyone starts from the board the server holds
+  try {
+    const savedRaw = localStorage.getItem(ELEMENTS_KEY);
+    if (shared) {
+      initialElements = shared;
+      seededFresh = false;
+    } else if (savedRaw === null) {
+      initialElements = [];   // the server has no board yet (or the page was opened as a plain file)
+      seededFresh = true;
+    } else {
+      initialElements = ExcalidrawLib.restoreElements(JSON.parse(savedRaw), null, { repairBindings: true });
+      seededFresh = false;
+    }
+  } catch (e) {
+    fail(
+      "The board's saved data looked corrupted.",
+      "Could not read this board's saved data: " + ((e && e.message) || String(e)),
+      e && e.stack ? e.stack : null
+    );
+    return;
+  }
+  window.__board.seeded = seededFresh;
+
+  let savedAppStateRaw = null;
+  try { savedAppStateRaw = localStorage.getItem(APPSTATE_KEY); } catch (e) { /* ignore */ }
+  let initialAppState = {};
+  if (savedAppStateRaw) {
+    try { initialAppState = ExcalidrawLib.restoreAppState(JSON.parse(savedAppStateRaw), null); } catch (e) { /* default */ }
+  }
+
+  let latestElements = initialElements;
+  let latestAppState = initialAppState;
+  let lastSavedVersion = null;
+  let saveTimer = null;
+
+  function writeAppState() {
+    try {
+      localStorage.setItem(APPSTATE_KEY, JSON.stringify({
+        scrollX: latestAppState.scrollX, scrollY: latestAppState.scrollY,
+        zoom: latestAppState.zoom, viewBackgroundColor: latestAppState.viewBackgroundColor,
+      }));
+    } catch (e) { console.error("[board] could not save view state", e); }
+  }
+  function saveElementsAndAppState() {
+    // A test load (?probe) of the live board must not leave its edits in this browser for the next tab to send.
+    if (!(live.onServer && live.probe)) try { localStorage.setItem(ELEMENTS_KEY, JSON.stringify(latestElements)); }
+    catch (e) { console.error("[board] could not save elements", e); }
+    writeAppState();
+  }
+  function flushSave() {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    const version = ExcalidrawLib.getSceneVersion(latestElements);
+    if (version === lastSavedVersion) { writeAppState(); return; }
+    lastSavedVersion = version;
+    saveElementsAndAppState();
+    live.pushScene(latestElements);
+  }
+  function scheduleSave(elements, appState) {
+    latestElements = elements;
+    latestAppState = appState;
+    live.onChange(elements, appState);
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flushSave, 600);
+  }
+  window.addEventListener("pagehide", flushSave);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSave();
+  });
+
+  function wireDebugHooks(api) {
+    const scene = () => api.getSceneElements();
+    const labelFor = (id) => {
+      const el = scene().find((e) => e.id === id);
+      if (!el) return "";
+      if (el.type === "text") return el.text || "";
+      const bound = scene().find((e) => e.type === "text" && e.containerId === id);
+      return bound ? (bound.text || "") : "";
+    };
+    const box = (e) => ({ id: e.id, x: Math.round(e.x), y: Math.round(e.y), w: Math.round(e.width), h: Math.round(e.height) });
+    const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    Object.assign(window.__board, {
+      nodeCount: () => scene().length,
+      // the boxes on the board: its shapes (rectangles, diamonds, ellipses), in the file's order
+      boxes: () => scene().filter((e) => ["rectangle", "diamond", "ellipse"].includes(e.type)).map((e) => e.id),
+      walkButtons: () => [...document.querySelectorAll("#buttons .walk")].map((b) => ({ text: b.textContent, frame: b.dataset.frame, title: b.title })),
+      labels: () => scene().filter((e) => e.type === "text").map((e) => e.text).filter(Boolean),
+      nodeAt: (id) => {
+        const el = scene().find((e) => e.id === id);
+        return el ? { x: Math.round(el.x), y: Math.round(el.y), text: labelFor(id) } : null;
+      },
+      box: (id) => { const e = scene().find((x) => x.id === id); return e ? box(e) : null; },
+      screenPointFor: (id, fx = 0.5, fy = 0.5) => {
+        const el = scene().find((e) => e.id === id);
+        if (!el) return null;
+        return ExcalidrawLib.sceneCoordsToViewportCoords(
+          { sceneX: el.x + el.width * fx, sceneY: el.y + el.height * fy }, api.getAppState());
+      },
+      bindings: () => scene().filter((e) => e.type === "arrow").map((e) => ({
+        id: e.id,
+        start: e.startBinding ? e.startBinding.elementId : null,
+        end: e.endBinding ? e.endBinding.elementId : null,
+      })),
+      // Text that must never touch other text: titles, sublines, labels, notes, examples, headings.
+      overlaps: () => {
+        const texts = scene().filter((e) => e.type === "text" && !e.isDeleted).map(box);
+        const out = [];
+        for (let i = 0; i < texts.length; i++) {
+          for (let j = i + 1; j < texts.length; j++) if (hit(texts[i], texts[j])) out.push([texts[i].id, texts[j].id]);
+        }
+        return out;
+      },
+      frameFirst: () => { frameFirstView(api); return window.__board.zoom; },
+      frameRect: (x, y, w, h, maxZoom) => { frameRect(api, { x, y, w, h }, maxZoom ?? 1); return window.__board.zoom; },
+      setLabel: (id, text) => {
+        const els = api.getSceneElementsIncludingDeleted();   // deleted ones too: dropping them would undo deletes
+        const target = els.find((e) => !e.isDeleted && e.type === "text" && e.containerId === id)
+          || els.find((e) => !e.isDeleted && e.id === id && e.type === "text");
+        if (!target) return null;
+        const updated = ExcalidrawLib.newElementWith(target, { text, originalText: text });
+        api.updateScene({ elements: els.map((e) => (e.id === target.id ? updated : e)) });
+        return window.__board.nodeAt(id);
+      },
+      exportPng: async () => {
+        const blob = await ExcalidrawLib.exportToBlob({
+          elements: scene(),
+          appState: { exportBackground: true, viewBackgroundColor: "#ffffff", exportScale: 1 },
+          files: api.getFiles(),
+          mimeType: "image/png",
+          exportPadding: 40,
+        });
+        return await new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(blob); });
+      },
+      excalidrawExport: () => {
+        const parsed = JSON.parse(ExcalidrawLib.serializeAsJSON(scene(), api.getAppState(), api.getFiles(), "local"));
+        return { type: parsed.type, elementCount: Array.isArray(parsed.elements) ? parsed.elements.length : -1 };
+      },
+      exportWired: () => typeof document.getElementById("exportBtn").onclick === "function",
+    });
+  }
+
+  function onExcalidrawAPI(api) {
+    try {
+      window.__excalidrawAPI = api;
+      wireNoteToggle();
+      wireWalk(api, initialElements);
+      document.getElementById("exportBtn").onclick = () => exportExcalidrawFile(api);
+      wireDebugHooks(api);
+      live.start(api);
+
+      // Deferred: at this instant Excalidraw's container has no size yet, so
+      // framing would measure zero. 500ms also gives the size check something real.
+      setTimeout(() => {
+        if (seededFresh || !savedAppStateRaw) frameFirstView(api);
+        const container = document.querySelector(".excalidraw");
+        const rect = container && container.getBoundingClientRect();
+        if (!rect || rect.width === 0 || rect.height === 0) {
+          fail("The board hit an error while loading.", "The board mounted but has no visible size.");
+          return;
+        }
+        window.__board.ready = true;
+        if (window.__loadWatchdog) { clearTimeout(window.__loadWatchdog); window.__loadWatchdog = null; }
+      }, 500);
+    } catch (e) {
+      fail("The board hit an error while loading.", "mount failed: " + ((e && e.message) || String(e)), e && e.stack ? e.stack : null);
+    }
+  }
+
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(
+    React.createElement(BoardErrorBoundary, null,
+      React.createElement(ExcalidrawLib.Excalidraw, {
+        initialData: { elements: initialElements, appState: initialAppState, scrollToContent: false },
+        onChange: scheduleSave,
+        onPointerUpdate: live.pointer,
+        excalidrawAPI: onExcalidrawAPI,
+        theme: "light",
+      })
+    )
+  );
+}
+
+/* Wait (briefly) for Virgil first, so the board's text is drawn in its own
+   font from the first frame. A font that never loads only costs 3.5s; it
+   never blocks the board. */
+function whenFontsReady(ms) {
+  if (!document.fonts || !document.fonts.load) return Promise.resolve();
+  return Promise.race([
+    Promise.all([document.fonts.load("16px Virgil"), document.fonts.load("16px Cascadia")]).catch(() => null),
+    new Promise((r) => setTimeout(r, ms)),
+  ]);
+}
+
+whenFontsReady(3500).then(start).catch((e) => {
+  fail("The board hit an error while loading.", "start failed: " + ((e && e.message) || String(e)), e && e.stack ? e.stack : null);
+});
+</script>
+</body>
+</html>
