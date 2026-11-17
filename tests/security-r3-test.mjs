@@ -5,59 +5,16 @@
 //   node tests/security-r3-test.mjs [spare port 4900–4940] [second] [third]      → PASS lines
 import fs from "node:fs"; import http from "node:http"; import os from "node:os"; import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import puppeteer from "puppeteer";
-import { ok, sleep, scratch, serveBoard, mcpSession, portArg, poll, credsIn, asPage, BIN, SAMPLE } from "./lib.mjs";
+import { ok, sleep, scratch, mcpSession, portArg, poll, credsIn, BIN, SAMPLE } from "./lib.mjs";
+import { TUNNEL, LINK, guestAt, guestHead, hit, json, alive, sceneOf, run, board as linkBoard, browsers, launch, kill, visit } from "./guest-lib.mjs";
 import * as S from "../src/server.mjs";
 
 const PORT = portArg(2, 4931), PORT2 = portArg(3, 4932), EVIL = portArg(4, 4933);
 process.setMaxListeners(80);
-const TUNNEL = "quiet-test-guest.trycloudflare.com", LINK = "a-test-link-key-0123456789abcdef";
-const guestAt = (ip) => ({ "cf-connecting-ip": ip, cookie: `bk=${LINK}` }), guestHead = guestAt("203.0.113.7");
-function hit(port, pth, { method = "GET", host, headers = {}, body, wait = 30000, chunked = false } = {}) {
-  return new Promise((done) => {
-    const data = body == null ? null : Buffer.from(typeof body === "string" ? body : JSON.stringify(body));
-    const h = { host: host || `localhost:${port}`, ...headers }; if (data && !chunked) h["content-length"] = data.length;
-    const r = http.request({ host: "127.0.0.1", port, path: pth, method, headers: h, setHost: false, agent: false }, (s) => {
-      let b = ""; s.on("data", (c) => (b += c)); s.on("end", () => done({ status: s.statusCode, body: b, headers: s.headers }));
-    });
-    r.on("error", (e) => done({ status: 0, body: e.code || e.message })); r.setTimeout(wait, () => r.destroy(new Error("no answer")));
-    if (data) { if (chunked) { for (let i = 0; i < data.length; i += 65536) r.write(data.subarray(i, i + 65536)); } else r.write(data); }
-    r.end();
-  });
-}
-const json = (r) => { try { return JSON.parse(r.body); } catch { return null; } };
-const alive = async (port) => (await hit(port, "/api/hello", { wait: 3000 })).status === 200;
-const sceneOf = (dir) => JSON.parse(fs.readFileSync(S.files(dir).scene, "utf8")).elements;
-const run = (cwd, args, extra = {}) => spawnSync(process.execPath, [BIN, ...args], { cwd, encoding: "utf8", timeout: 30000, ...extra });
+const board = (port, name, o = {}) => linkBoard(port, name, { prefix: "r3", ...o });
 const base = { x: 0, y: 0, width: 200, height: 120, angle: 0, strokeColor: "#1e1e1e", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, strokeStyle: "solid",
   roughness: 1, opacity: 100, groupIds: [], frameId: null, roundness: null, seed: 1, version: 3, versionNonce: 1, isDeleted: false, boundElements: null, updated: 1, locked: false };
 const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle", x: (i % 20) * 60, y: Math.floor(i / 20) * 60, width: w, height: w, backgroundColor: "#ff8787", fillStyle: "cross-hatch", strokeWidth: 0.5, opacity: 30, seed: i + 1, version: 2, ...extra });
-
-async function board(port, name, { planted, before } = {}) {
-  const dir = scratch(`r3-${name}`);
-  if (planted) { fs.mkdirSync(S.files(dir).live, { recursive: true }); fs.writeFileSync(S.files(dir).scene, JSON.stringify({ elements: planted })); }
-  if (before) before(dir);
-  const srv = await serveBoard(dir, port);
-  fs.writeFileSync(S.files(dir).share, JSON.stringify({ key: LINK, pid: process.pid, port, url: `https://${TUNNEL}` }), { mode: 0o600 });
-  const home = credsIn((await hit(port, "/")).body), guest = credsIn((await hit(port, "/", { host: TUNNEL, headers: guestHead })).body);
-  const head = (who, g = guest, ip = "203.0.113.7") => who === "guest" ? { ...asPage(g.key, `https://${TUNNEL}`, g.secret), ...guestAt(ip) } : asPage(home.key, `http://localhost:${port}`, home.secret);
-  const post = (who, pth, body, g, ip, opts = {}) => hit(port, pth, { method: "POST", host: who === "guest" ? TUNNEL : undefined, body, headers: head(who, g, ip), ...opts });
-  const scene = (who, elements) => post(who, "/api/scene", { c: (who === "guest" ? guest : home).c, name: who === "guest" ? "Alex" : undefined, elements });
-  return { dir, srv, port, home, guest, post, scene, stop: async () => { srv.kill(); await poll(async () => !(await alive(port)), 5000); } };
-}
-const browsers = [];
-const launch = async () => { const b = await puppeteer.launch({ headless: true, args: ["--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"] }); browsers.push(b); return b; };
-const kill = async (b) => { const p = b.process(); await Promise.race([b.close().catch(() => {}), sleep(3000)]); try { p && p.kill("SIGKILL"); } catch {} };
-process.on("exit", () => { for (const b of browsers) try { b.process() && b.process().kill("SIGKILL"); } catch {} });
-// A clean visitor: how long until the board says it's ready, and the longest its main thread was blocked
-async function visit(port) {
-  const b = await launch(), p = await b.newPage(); await p.setViewport({ width: 1440, height: 900 });
-  await p.evaluateOnNewDocument(() => { window.__gap = 0; let last = performance.now(); setInterval(() => { const t = performance.now(); window.__gap = Math.max(window.__gap, t - last); last = t; }, 20); });
-  const t0 = Date.now(); p.goto(`http://localhost:${port}/?probe`, { waitUntil: "domcontentloaded" }).catch(() => {});
-  let ready = -1; for (let i = 0; i < 160; i++) { const r = await Promise.race([p.evaluate(() => window.__board && window.__board.ready).catch(() => false), sleep(10000).then(() => "HUNG")]); if (r === true) { ready = Date.now() - t0; break; } if (r === "HUNG") break; await sleep(250); }
-  await sleep(2000); const gap = await Promise.race([p.evaluate(() => window.__gap).catch(() => -1), sleep(15000).then(() => -2)]);
-  await kill(b); return { ready, gap: Math.round(gap) };
-}
 
 /* S2 (item 1): symlinks a cloned repo ships in .sketchcall/ (r3-sym.mjs, r3-open.mjs) */
 {

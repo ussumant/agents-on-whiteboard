@@ -26,7 +26,7 @@
     "url": "https://github.com/ussumant/sketchcall/issues"
   },
   "scripts": {
-    "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/security-r2-test.mjs 4928 4929 4930 && node tests/security-r3-test.mjs 4931 4932 4933 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912 && node tests/stranger-test.mjs 4927",
+    "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/security-r2-test.mjs 4928 4929 4930 && node tests/security-r3-test.mjs 4931 4932 4933 && node tests/security-r4-test.mjs 4934 4935 4936 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912 && node tests/stranger-test.mjs 4927",
     "test:pack": "node tests/pack-test.mjs",
     "test:plugin": "node tests/plugin-test.mjs",
     "test:mcp": "node tests/mcp-test.mjs 4915",
@@ -36,6 +36,7 @@
     "test:security": "node tests/security-test.mjs 4920 4921 4922",
     "test:security-r2": "node tests/security-r2-test.mjs 4928 4929 4930",
     "test:security-r3": "node tests/security-r3-test.mjs 4931 4932 4933",
+    "test:security-r4": "node tests/security-r4-test.mjs 4934 4935 4936",
     "test:xsite": "node tests/xsite-test.mjs 4925 4926",
     "test:open": "node tests/open-test.mjs 4913 4914",
     "test:mp": "node tests/mp-test.mjs 4910",

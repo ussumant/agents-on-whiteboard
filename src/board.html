@@ -605,9 +605,24 @@ const live = (() => {
   const linkOk = (l) => typeof l === "string" && l.length <= 2000 && !/[\p{Cc}\p{Cf}\p{Z}\s]|&[#\w]+;/u.test(l)
     && (() => { try { const u = new URL(l); return (u.protocol === "https:" || u.protocol === "http:") && l.toLowerCase().startsWith(`${u.protocol}//`) && !u.username && !u.password; } catch (e) { return false; } })();
   // A hatched, cross-hatched or zigzag fill past 2,000 × 2,000 is drawn solid, and with a stroke of at least 1 below it, as
-  // on the server: its drawing time grows with size over stroke, and 200 big ones froze the page.
-  const HATCH = new Set(["hachure", "cross-hatch", "zigzag"]);
-  const unhatched = (x) => !HATCH.has(x.fillStyle) ? x : (x.width > 2000 || x.height > 2000) ? { ...x, fillStyle: "solid" } : x.strokeWidth < 1 ? { ...x, strokeWidth: 1 } : x;
+  // on the server: its drawing time grows with size over stroke, and 200 big ones froze the page. Any other fill (dots,
+  // dashed, zigzag-line, a name the renderer doesn't know) is solid, and a line, arrow or stroke is measured by its points.
+  const FILLS = new Set(["solid", "hachure", "cross-hatch", "zigzag"]), HATCH = new Set(["hachure", "cross-hatch", "zigzag"]);
+  const extent = (x) => {
+    let w = x.width || 0, h = x.height || 0;
+    if (Array.isArray(x.points) && x.points.length) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const [a, b] of x.points) { x0 = Math.min(x0, a); x1 = Math.max(x1, a); y0 = Math.min(y0, b); y1 = Math.max(y1, b); }
+      w = Math.max(w, x1 - x0); h = Math.max(h, y1 - y0);
+    }
+    return [w, h];
+  };
+  const unhatched = (x) => {
+    if (!FILLS.has(x.fillStyle)) x = { ...x, fillStyle: "solid" };
+    if (!HATCH.has(x.fillStyle)) return x;
+    const [w, h] = extent(x);
+    return w > 2000 || h > 2000 ? { ...x, fillStyle: "solid" } : x.strokeWidth < 1 ? { ...x, strokeWidth: 1 } : x;
+  };
   const shapeOk = (e) => !!e && typeof e === "object" && typeof e.id === "string" && SHAPES.has(e.type) && e.containerId !== e.id && sized(e)
     && (e.boundElements == null || (Array.isArray(e.boundElements) && e.boundElements.every((b) => b && typeof b.id === "string")))
     && (e.groupIds == null || (Array.isArray(e.groupIds) && e.groupIds.every((g) => typeof g === "string")))
@@ -673,10 +688,16 @@ const live = (() => {
       .filter((id) => force || now - (picsAsked.get(id) || 0) > 10000);
     if (!want.length) return;
     want.forEach((id) => picsAsked.set(id, now));
-    try {
-      const { files } = await (await fetch(`/api/files?ids=${want.map(encodeURIComponent).join(",")}`, { cache: "no-store" })).json();
-      if (files && files.length) { files.forEach((f) => picsSent.add(f.id)); api.addFiles(files); }
-    } catch (e) { /* asked again when the server says it has new pictures */ }
+    // Ten at a time, as the server answers; a part that doesn't come is asked again in 10 s, or when the server says it
+    // has new pictures.
+    for (let i = 0; i < want.length; i += 10) {
+      try {
+        const r = await fetch(`/api/files?ids=${want.slice(i, i + 10).map(encodeURIComponent).join(",")}`, { cache: "no-store" });
+        if (!r.ok) break;
+        const { files } = await r.json();
+        if (files && files.length) { files.forEach((f) => picsSent.add(f.id)); api.addFiles(files); }
+      } catch (e) { break; }
+    }
   }
   // Changes go out in parts of at most 1,000 elements (the server takes 2,000 at a time). A part that didn't get through is
   // sent again after 2 s, 4 s and 8 s, then the page says so; a part the server refused for good isn't retried.
@@ -1552,7 +1573,9 @@ const live = (() => {
     if (polling) { pollAgain = true; return; }
     polling = true; clearTimeout(pollTimer);
     try {
-      const { items } = await (await fetch("/api/thread", { cache: "no-store" })).json();
+      const r = await fetch("/api/thread", { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);   // 429: a guest fetching a big record faster than the link allows; tried again shortly
+      const { items } = await r.json();
       pollFails = 0;
       if (stale) { $("dot").className = "dot off"; $("conn").textContent = STALE; } else { $("dot").className = "dot on"; $("conn").textContent = here(); }
       for (const it of items) {
@@ -1620,7 +1643,11 @@ const live = (() => {
     async load(cached) {
       if (!onServer) return null;
       try {
-        const { elements } = await (await fetch("/api/scene", { cache: "no-store" })).json();
+        // A link guest who just loaded a big board can be told to wait (429): ask again, never start without the board.
+        let r = await fetch("/api/scene", { cache: "no-store" });
+        for (let wait = 1000; r.status === 429 && wait <= 16000; wait *= 2) { await new Promise((ok) => setTimeout(ok, wait)); r = await fetch("/api/scene", { cache: "no-store" }); }
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const { elements } = await r.json();
         if (!elements || !elements.length) return null;
         const mine = new Map((cached || []).map((e) => [e.id, e]));
         for (const e of elements) sent.set(e.id, e.version);

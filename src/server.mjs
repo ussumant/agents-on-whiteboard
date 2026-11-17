@@ -97,17 +97,41 @@ export const okElement = (e, known = id => ID.test(id)) => shapeOk(e) && typeof 
 // the page (it decodes &#47; and &tab;, and drops control, space and zero-width characters), so "/&#47;evil.test" became
 // "//evil.test" there and opened another site in the board's own tab. A link that would change in that cleaning is
 // dropped, along with relative links and every other scheme.
+// A link guest, for the per-guest limits: the address Cloudflare reports (cf-connecting-ip), with an IPv6 address cut to
+// its /64. A home connection gets a whole /64, so keying on the full address let one person be as many guests as they
+// liked. IPv4 written as IPv6 (::ffff:a.b.c.d) is the IPv4 address.
+export function guestKey(ip) {
+  const a = String(ip || 'link').trim().toLowerCase().replace(/%.*$/, '').slice(0, 64);
+  const v4 = a.match(/^(?:::ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/); if (v4) return v4[1];
+  if (!/^[\da-f:.]+$/.test(a) || a.split('::').length > 2) return a;
+  const [head, tail] = a.split('::'), h = head ? head.split(':') : [], t = tail ? tail.split(':') : [];
+  const all = a.includes('::') ? [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t] : h;
+  return `${all.slice(0, 4).map(x => (parseInt(x, 16) || 0).toString(16)).join(':')}::/64`;
+}
 export const linkOk = l => typeof l === 'string' && l.length <= 2000 && !/[\p{Cc}\p{Cf}\p{Z}\s]|&[#\w]+;/u.test(l)
   && (() => { try { const u = new URL(l); return (u.protocol === 'https:' || u.protocol === 'http:') && l.toLowerCase().startsWith(`${u.protocol}//`) && !u.username && !u.password; } catch { return false; } })();
 // What is kept of an element that passed: never `validated` (Excalidraw draws an embed that says so), and only a link
 // that passes linkOk. A hatched, cross-hatched or zigzag fill costs drawing time by its size over its stroke: 200 boxes of
 // 1e5, each in bounds, froze every page. So such a fill is drawn solid past 2,000 × 2,000, and with a stroke of at least
-// 1 below it (measured: 200 boxes at the cap load in 1.2 s).
-export const HATCH = new Set(['hachure', 'cross-hatch', 'zigzag']), HATCH_MAX = 2000;
+// 1 below it (measured: 200 boxes at the cap load in 1.2 s). Excalidraw's renderer also draws dots, dashed and
+// zigzag-line fills, and any other name as hachure, so only the four fills its menu offers are kept: anything else is
+// solid. A line, arrow or freehand stroke is measured by its points, which is how the page sizes it, not by the width and
+// height it declares. (No fill named is drawn solid.)
+export const FILLS = new Set(['solid', 'hachure', 'cross-hatch', 'zigzag']), HATCH = new Set(['hachure', 'cross-hatch', 'zigzag']), HATCH_MAX = 2000;
+export const extent = e => {
+  let w = e.width || 0, h = e.height || 0;
+  if (Array.isArray(e.points) && e.points.length) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const [x, y] of e.points) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    w = Math.max(w, x1 - x0); h = Math.max(h, y1 - y0);
+  }
+  return [w, h];
+};
 export const cleanElement = e => {
   const { validated, ...out } = e;
   if (out.link != null && !linkOk(out.link)) out.link = null;
-  if (HATCH.has(out.fillStyle)) { if ((out.width || 0) > HATCH_MAX || (out.height || 0) > HATCH_MAX) out.fillStyle = 'solid'; else if (!(out.strokeWidth >= 1)) out.strokeWidth = 1; }
+  if (out.fillStyle != null && !FILLS.has(out.fillStyle)) out.fillStyle = 'solid';
+  if (HATCH.has(out.fillStyle)) { const [w, h] = extent(out); if (w > HATCH_MAX || h > HATCH_MAX) out.fillStyle = 'solid'; else if (!(out.strokeWidth >= 1)) out.strokeWidth = 1; }
   return out;
 };
 // One element is at most 64 KB as JSON (a line or a freehand stroke, with up to 10,000 points, 256 KB).
@@ -129,29 +153,45 @@ const nextId = p => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 
 // holding a link anywhere in it, and every write opens its file without following a link at the last step (O_NOFOLLOW),
 // after checking the folders between it and the call folder: a link swapped in later is caught too. The call folder is
 // this account's only (700, files 600), and git ignores it.
+// A hard link is another name for the same file, which lstat and O_NOFOLLOW can't tell apart (a tarball can ship one:
+// events.log as the repo's setup.sh, a picture as its .env). So no file in the call folder may have more than one name,
+// checked at start and on the open file itself before each write or read; and nothing in it may be other than a file or
+// a folder (a named pipe would hang the first write).
 const linkError = p => Object.assign(new Error(`${p} is a symbolic link. ${NAME} never writes through links: delete it (or the whole ${CALL} folder, if you didn't make it) and start again.`), { code: 'ESYMLINK' });
+const hardError = (p, n) => Object.assign(new Error(`${p} is a hard link: the same file has ${n} names on disk. ${NAME} never writes or serves such a file: delete it (or the whole ${CALL} folder, if you didn't make it) and start again.`), { code: 'EHARDLINK' });
+const oddError = p => Object.assign(new Error(`${p} is not a plain file or folder. ${NAME} only keeps files and folders there: delete it (or the whole ${CALL} folder, if you didn't make it) and start again.`), { code: 'ENOTFILE' });
+const plain = (p, st) => { if (!st.isFile()) throw oddError(p); if (st.nlink > 1) throw hardError(p, st.nlink); };
 const isLink = p => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
 function noLinks(p) {   // p, and each folder above it up to the call folder
   const parts = p.split(path.sep), at = parts.lastIndexOf(CALL);
   for (let i = parts.length; i > (at < 0 ? parts.length - 1 : at); i--) { const q = parts.slice(0, i).join(path.sep) || path.sep; if (isLink(q)) throw linkError(q); }
 }
-const OPEN = fs.constants.O_WRONLY | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW || 0);
-export function openSafe(p, flags = fs.constants.O_APPEND) {
+// (O_NONBLOCK: opening a named pipe returns at once instead of waiting for a reader; a plain file ignores it.)
+const C = fs.constants, NOLINK = (C.O_NOFOLLOW || 0) | (C.O_NONBLOCK || 0), OPEN = C.O_WRONLY | C.O_CREAT | NOLINK;
+// A file opened to write: truncated (`trunc`) only once it is known to be this call's own, so a hard link's other file
+// is never emptied by the open itself.
+export function openSafe(p, trunc = false) {
   noLinks(p);
-  let fd; try { fd = fs.openSync(p, OPEN | flags, 0o600); } catch (e) { throw e.code === 'ELOOP' ? linkError(p) : e; }
-  try { fs.fchmodSync(fd, 0o600); } catch { /* a filesystem without modes */ }
+  let fd; try { fd = fs.openSync(p, OPEN | (trunc ? 0 : C.O_APPEND), 0o600); } catch (e) { throw e.code === 'ELOOP' ? linkError(p) : e; }
+  try { plain(p, fs.fstatSync(fd)); if (trunc) fs.ftruncateSync(fd, 0); try { fs.fchmodSync(fd, 0o600); } catch { /* a filesystem without modes */ } }
+  catch (e) { fs.closeSync(fd); throw e; }
   return fd;
 }
-export const writeSafe = (p, data) => { const fd = openSafe(p, fs.constants.O_TRUNC); try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); } };
-export const appendSafe = (p, data) => { const fd = openSafe(p, fs.constants.O_APPEND); try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); } };
+export const writeSafe = (p, data) => { const fd = openSafe(p, true); try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); } };
+export const appendSafe = (p, data) => { const fd = openSafe(p); try { fs.writeFileSync(fd, data); } finally { fs.closeSync(fd); } };
 export const mkdirSafe = p => { noLinks(p); fs.mkdirSync(p, { recursive: true, mode: 0o700 }); noLinks(p); };
-export const readSafe = p => { if (isLink(p)) throw linkError(p); return fs.readFileSync(p, 'utf8'); };
-// The whole call folder, before anything reads or writes it: no link in it anywhere.
+// A file read from the call folder: the same checks, on the file that was opened. `enc` null gives the bytes.
+export function readSafe(p, enc = 'utf8') {
+  noLinks(p);
+  let fd; try { fd = fs.openSync(p, C.O_RDONLY | NOLINK); } catch (e) { throw e.code === 'ELOOP' ? linkError(p) : e; }
+  try { plain(p, fs.fstatSync(fd)); return fs.readFileSync(fd, enc); } finally { fs.closeSync(fd); }
+}
+// The whole call folder, before anything reads or writes it: only folders, and files with one name each.
 export function checkCall(dir) {
   const live = files(dir).live;
   if (isLink(live)) throw linkError(live);
   if (!fs.existsSync(live)) return;
-  const walk = d => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f), st = fs.lstatSync(p); if (st.isSymbolicLink()) throw linkError(p); if (st.isDirectory()) walk(p); } };
+  const walk = d => { for (const f of fs.readdirSync(d)) { const p = path.join(d, f), st = fs.lstatSync(p); if (st.isSymbolicLink()) throw linkError(p); if (st.isDirectory()) walk(p); else plain(p, st); } };
   walk(live);
 }
 export function makeCall(dir) {
@@ -341,7 +381,7 @@ export async function startBoard({ dir, seed, port = DEFAULT_PORT, pick = false 
 // Stop this board's server: the process in server.json, once its port answers for this folder (a pid alone could be
 // another program's by now).
 export async function stopBoard({ dir }) {
-  let s; try { s = JSON.parse(fs.readFileSync(files(dir).server, 'utf8')); } catch { return { stopped: false, why: 'no server is running for this board' }; }
+  let s; try { s = JSON.parse(readSafe(files(dir).server)); } catch { return { stopped: false, why: 'no server is running for this board' }; }
   const h = await helloAt(s.port);
   if (!(h && h.dir && fs.realpathSync(h.dir) === fs.realpathSync(dir))) { try { fs.unlinkSync(files(dir).server); } catch {} return { stopped: false, why: 'its server had already stopped' }; }
   process.kill(s.pid, 'SIGTERM');
@@ -416,7 +456,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // No SVG (it can carry script); at most 200 pictures and 200 MB per board, 5 MB each.
   const PICS = path.join(LIVE, 'files'), PIC_EXT = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' }, PIC_MAX = 5e6, PICS_MAX = 200, PICS_BYTES = 200e6;
   const picsNow = () => { try { const l = fs.readdirSync(PICS); return { n: l.length, bytes: l.reduce((t, f) => t + fs.statSync(path.join(PICS, f)).size, 0) }; } catch { return { n: 0, bytes: 0 }; } };
-  const picOf = id => { if (!/^[\w-]{1,128}$/.test(id || '') || isLink(PICS)) return null; for (const x of Object.values(PIC_EXT)) { const p = path.join(PICS, `${id}.${x}`); try { if (fs.lstatSync(p).isFile()) return p; } catch { /* not this type */ } } return null; };
+  const picOf = id => { if (!/^[\w-]{1,128}$/.test(id || '') || isLink(PICS)) return null; for (const x of Object.values(PIC_EXT)) { const p = path.join(PICS, `${id}.${x}`); try { const st = fs.lstatSync(p); if (st.isFile() && st.nlink === 1) return p; } catch { /* not this type */ } } return null; };
   // The scene everyone shares, including deleted elements (a delete is a newer version of the element, not its absence).
   const els = new Map(), by = new Map();   // id → element; id → [author, came through the link] of whoever last changed it
   // The scene's size: at most 5,000 elements (deleted ones too) and 20 MB. When it's full, the oldest deleted elements make
@@ -428,7 +468,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // The link's hatched fills together: at most 200 at the largest size (2,000 × 2,000); past that its new ones are solid.
   const HATCH_AREA = 200 * HATCH_MAX * HATCH_MAX, hatchArea = new Map();
   let hatchSum = 0;
-  const hatchOf = (e, far) => far && HATCH.has(e.fillStyle) ? (e.width || 0) * (e.height || 0) : 0;
+  const hatchOf = (e, far) => { if (!far || !HATCH.has(e.fillStyle)) return 0; const [w, h] = extent(e); return w * h; };
   const put = (e, size, far = false) => {
     const old = sizes.get(e.id) || 0, a = hatchOf(e, far);
     hatchSum += a - (hatchArea.get(e.id) || 0); if (a) hatchArea.set(e.id, a); else hatchArea.delete(e.id);
@@ -458,7 +498,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   try { start = seedFile(DIR, seed); } catch (e) { if (!fs.existsSync(SCENE)) throw e; }   // a call already under way doesn't need its seed
   if (fs.existsSync(SCENE)) {
     // An element that could crash the server or lock itself (saved before these checks) is left behind, with a note.
-    const all = JSON.parse(fs.readFileSync(SCENE, 'utf8')).elements || [], kept = all.filter(load).length;
+    const all = JSON.parse(readSafe(SCENE)).elements || [], kept = all.filter(load).length;
     if (kept < all.length || cleaned) { console.error(`left out ${all.length - kept} broken element(s) and cleaned ${cleaned} from ${SCENE}`); writeSafe(SCENE, JSON.stringify({ elements: [...els.values()] })); }
   } else if (start) {
     // A new call starts from the .excalidraw file as it is, its pictures included.
@@ -529,10 +569,11 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
     if (!o || typeof o !== 'object' || Array.isArray(o)) throw fail(400, 'send one JSON object'); return o; };
   // Every answer: never inside another website's frame (clickjacking), no referrer (the first request carries ?k=).
   // The body is built before the headers go out, so one that can't be built is a 500, never headers and then a hang.
+  const heads = (type, head) => ({ 'content-type': type, 'cache-control': 'no-store', 'x-board-live': MP,
+    'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', ...head });
   const send = (res, code, data, type = 'application/json', head = {}) => {
     let out; try { out = typeof data === 'string' ? data : JSON.stringify(data); } catch (e) { code = 500; type = 'application/json'; out = JSON.stringify({ error: `could not answer: ${e.message}` }); }
-    res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-board-live': MP,
-      'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', ...head });
+    res.writeHead(code, heads(type, head));
     res.end(out); };
   // A timer's work never takes the server down: one bad element used to, 2.5 s after it arrived.
   const safe = (what, fn) => (...a) => { try { return fn(...a); } catch (e) { console.error(`ERROR in ${what}: ${e.message}`); } };
@@ -541,19 +582,29 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // share link at half that, so a guest can't fill it and lock this computer out.
   const recordFull = () => { try { return fs.statSync(THREAD).size >= 10e6; } catch { return false; } };
   let linkRecordBytes = 0;
-  try { for (const l of fs.readFileSync(THREAD, 'utf8').split('\n')) if (l.includes('"via":"link"')) try { if (JSON.parse(l).via === 'link') linkRecordBytes += Buffer.byteLength(l) + 1; } catch {} } catch {}
+  try { for (const l of readSafe(THREAD).split('\n')) if (l.includes('"via":"link"')) try { if (JSON.parse(l).via === 'link') linkRecordBytes += Buffer.byteLength(l) + 1; } catch {} } catch {}
   const linkFull = far => far && linkRecordBytes >= 5e6;
-  // Writes through the link: each guest 4 MB at once, refilled at 2 MB a second, and all of them together 12 MB at 6 MB a
-  // second. A guest (their address, which Cloudflare sets as cf-connecting-ip) posting faster gets 429 and waits; other
-  // guests and this computer go on.
-  const buckets = new Map(), shared = { tokens: 12e6, at: Date.now() };
+  // Through the link, each guest (guestKey: their address, an IPv6 one by its /64) has a budget under one all guests share,
+  // and going past it gets 429 while other guests and this computer go on.
+  // - Writes: each guest 8 MB at once, refilled at 2 MB a second (a 5 MB picture fits when the guest has been idle), and
+  //   all together 16 MB at 6 MB a second. Charged as the bytes arrive.
+  // - Reads: each guest 24 MB at once, refilled at 8 MB a second, and all together 48 MB at 16 MB a second. An answer is
+  //   charged before it is built, from sizes already known; one bigger than what is left still goes out while the guest
+  //   has any left (a 20 MB board has to load), and the guest waits it off. Guests fetching every picture or the whole
+  //   record pushed this computer's own requests past 1 s.
   const refill = (b, size, rate) => { const t = Date.now(); b.tokens = Math.min(size, b.tokens + (t - b.at) * rate / 1000); b.at = t; return b; };
-  const spend = (guest, n) => {
-    let g = buckets.get(guest); if (!g) { g = { tokens: 4e6, at: Date.now() }; buckets.set(guest, g); if (buckets.size > 5000) buckets.delete(buckets.keys().next().value); }
-    refill(g, 4e6, 2e6); refill(shared, 12e6, 6e6);
-    if (n > g.tokens || n > shared.tokens) return false;
-    g.tokens -= n; shared.tokens -= n; return true;
+  const budget = (size, rate, allSize, allRate, owe) => {
+    const each = new Map(), all = { tokens: allSize, at: Date.now() };
+    return (guest, n) => {
+      let g = each.get(guest); if (!g) { g = { tokens: size, at: Date.now() }; each.set(guest, g); if (each.size > 5000) each.delete(each.keys().next().value); }
+      refill(g, size, rate); refill(all, allSize, allRate);
+      if (owe ? g.tokens <= 0 || all.tokens <= 0 : n > g.tokens || n > all.tokens) return false;
+      g.tokens -= n; all.tokens -= n; return true;
+    };
   };
+  const spend = budget(8e6, 2e6, 16e6, 6e6, false), spendRead = budget(24e6, 8e6, 48e6, 16e6, true);
+  const SLOW = { connection: 'close', 'retry-after': '2' };
+  const readOk = (req, res, n) => { if (!req.guest || spendRead(req.guest, n)) return true; send(res, 429, { error: 'too much at once through the link: wait a moment' }, 'application/json', SLOW); return false; };
   const appended = (item, far) => { if (far) linkRecordBytes += Buffer.byteLength(JSON.stringify(item)) + 1; return item; };
 
   // Who is in the room and what changed. Every page long-polls /api/changes: the poll returns at once when something it
@@ -637,7 +688,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, 'http://x'), far = remote(req);
-      req.guest = far ? String(req.headers['cf-connecting-ip'] || 'link').slice(0, 64) : null;   // who pays for a link request
+      req.guest = far ? guestKey(req.headers['cf-connecting-ip']) : null;   // who pays for a link request
       let head = {};
       if (far) {
         const s = openShare(), k = url.searchParams.get('k') || ((req.headers.cookie || '').match(/(?:^|;\s*)bk=([^;]+)/) || [])[1];
@@ -678,12 +729,20 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         if (took.length) { broadcast('files', { ids: took }, c ?? null); appendSafe(EVENTS, `IMAGE: ${quiet(shown(authorOf(name, far)))}${far ? ' via link' : ''} added ${took.map(id => `${CALL}/files/${path.basename(picOf(id))}`).join(', ')}\n`); }
         return send(res, 200, { ok: true, took });
       }
+      // At most 10 pictures an answer (the page asks in tens), sent one at a time rather than built as one string. Through
+      // the link the answer is paid for first, by the pictures' sizes.
       if (req.method === 'GET' && url.pathname === '/api/files') {
-        const out = (url.searchParams.get('ids') || '').split(',').map(picOf).filter(Boolean).map(p => {
+        const want = [...new Set((url.searchParams.get('ids') || '').split(','))].slice(0, 10).map(picOf).filter(Boolean);
+        if (!readOk(req, res, want.reduce((t, p) => { try { return t + Math.ceil(fs.statSync(p).size * 4 / 3) + 200; } catch { return t; } }, 0))) return;
+        res.writeHead(200, heads('application/json', {})); res.write('{"files":[');
+        let first = true;
+        for (const p of want) {
           const ext = path.extname(p).slice(1), type = Object.keys(PIC_EXT).find(k => PIC_EXT[k] === ext);
-          return { id: path.basename(p, '.' + ext), mimeType: `image/${type}`, dataURL: `data:image/${type};base64,${fs.readFileSync(p).toString('base64')}`, created: fs.statSync(p).mtimeMs };
-        });
-        return send(res, 200, { files: out });
+          let bytes; try { bytes = readSafe(p, null); } catch { continue; }   // gone, or no longer a plain file with one name
+          res.write(`${first ? '' : ','}${JSON.stringify({ id: path.basename(p, '.' + ext), mimeType: `image/${type}`, dataURL: `data:image/${type};base64,${bytes.toString('base64')}`, created: fs.statSync(p).mtimeMs })}`);
+          first = false;
+        }
+        return res.end(']}');
       }
       // `answer`: pages show ✓ keep / ✎ change only to a server that takes them (an older one would 404).
       // The folder's path (it names this computer's user) only to this computer: `share` reads it from here.
@@ -720,7 +779,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         tourAt.set(k, { timer: setTimeout(safe('tour line', () => { tourAt.delete(k); appendSafe(EVENTS, line + '\n'); }), 1200) });
         return send(res, 200, { ok: true });
       }
-      if (req.method === 'GET' && url.pathname === '/api/thread') return send(res, 200, { items: thread(DIR) });
+      if (req.method === 'GET' && url.pathname === '/api/thread') { if (!readOk(req, res, fs.existsSync(THREAD) ? fs.statSync(THREAD).size : 0)) return; return send(res, 200, { items: thread(DIR) }); }
       if (req.method === 'POST' && url.pathname === '/api/comment') {
         const { text, on: sent, name } = await json(req);
         if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'empty' });
@@ -734,7 +793,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         appendSafe(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => `${CALL}/files/` + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
         return send(res, 200, item);
       }
-      if (req.method === 'GET' && url.pathname === '/api/scene') return send(res, 200, { elements: [...els.values()] });
+      if (req.method === 'GET' && url.pathname === '/api/scene') { if (!readOk(req, res, sceneBytes)) return; return send(res, 200, { elements: [...els.values()] }); }
       if (req.method === 'POST' && url.pathname === '/api/scene') {
         // A page sends at most 10 MB and 2,000 elements at a time (the page splits a bigger change); a guest 2 MB.
         const scene = await json(req, far ? 2e6 : 10e6);
@@ -788,7 +847,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   });
   server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `port ${port} is taken: pass --port <another>` : e.message); process.exit(1); });
   // server.json says which process serves this call, so `stop` can stop it; it goes when the server does.
-  const SERVER = files(DIR).server, gone = () => { try { if (JSON.parse(fs.readFileSync(SERVER, 'utf8')).pid === process.pid) fs.unlinkSync(SERVER); } catch { /* not ours */ } };
+  const SERVER = files(DIR).server, gone = () => { try { if (JSON.parse(readSafe(SERVER)).pid === process.pid) fs.unlinkSync(SERVER); } catch { /* not ours */ } };
   // (A signal ends the server only when nothing else listens for it: `share` runs this server in its own process and
   // must close its link first.)
   process.on('exit', gone); for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (process.listenerCount(sig) === 1) process.exit(0); });
@@ -831,7 +890,7 @@ export async function share({ dir, port = DEFAULT_PORT } = {}) {
 
 export function unshare({ dir } = {}) {
   const { share: SHARE } = files(path.resolve(dir || '.'));
-  try { const s = JSON.parse(fs.readFileSync(SHARE, 'utf8')); try { process.kill(s.pid, 'SIGTERM'); } catch {} } catch { console.log('not shared'); }
+  try { const s = JSON.parse(readSafe(SHARE)); try { process.kill(s.pid, 'SIGTERM'); } catch {} } catch { console.log('not shared'); }
   try { fs.unlinkSync(SHARE); } catch {}
   console.log('link closed');
 }

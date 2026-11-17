@@ -7,7 +7,7 @@
 // tour another presenter runs.
 import fs from 'node:fs';
 import path from 'node:path';
-import { files, samePresenter, shown, mkdirSafe, HOME, BREAKS, ID } from './server.mjs';
+import { files, samePresenter, shown, mkdirSafe, readSafe, HOME, BREAKS, ID } from './server.mjs';
 
 // Everything in an event came from a commenter, so it is cleaned the way it reaches the agent's context: each field is one
 // line of at most 120 characters with no quotes or angle brackets (they could break out of a <channel …> tag); the text
@@ -45,7 +45,7 @@ export function eventOf(source, it, board, me) {
 // The JSON an agent gets from `sketchcall wait` and board_wait: the event's id, its fields, and the text.
 export const flatEvent = ev => ({ id: ev.id, ...ev.meta, content: ev.content });
 
-const linesOf = f => { try { return fs.readFileSync(f, 'utf8').split('\n'); } catch { return []; } };
+const linesOf = f => { try { return readSafe(f).split('\n'); } catch { return []; } };
 // Where to start reading each file: their ends, or (with `since`, an event id) just after that event, so whatever came in
 // after it is read first. Throws if `since` isn't in the record.
 function startAt(f, since) {
@@ -73,7 +73,7 @@ export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
   mkdirSafe(f.live);
   const pos = startAt(f, since), rest = { thread: '', canvas: '' };
   const read = k => {
-    const p = f[k]; let size; try { const st = fs.lstatSync(p); if (st.isSymbolicLink()) return; size = st.size; } catch { return; }   // never read through a link
+    const p = f[k]; let size; try { const st = fs.lstatSync(p); if (!st.isFile() || st.nlink > 1) return; size = st.size; } catch { return; }   // never through a link, nor a file with another name
     if (size < pos[k]) { pos[k] = 0; rest[k] = ''; }   // the file was replaced
     if (size === pos[k]) return;
     const fd = fs.openSync(p, 'r'), buf = Buffer.alloc(size - pos[k]);

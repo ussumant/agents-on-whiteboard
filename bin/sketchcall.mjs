@@ -65,11 +65,16 @@ for (let i = 0; i < argv.length; i++) {
 function fail(msg) { console.error(msg); process.exit(1); }
 
 const [cmd, ...rest] = pos;
+// Nothing printed to the terminal carries a control character. A folder or file name, or a guest's comment in `record`,
+// holding escape sequences could rewrite these lines, retitle the window or (OSC 52) fill the clipboard; each one prints
+// as \xHH instead. Line breaks and tabs stay. (`mcp` is left alone: its output is the protocol, all JSON.)
+const CTRL = /[\0-\x08\x0b-\x1f\x7f-\x9f]/g, hex = c => [...Buffer.from(c)].map(b => `\\x${b.toString(16).padStart(2, '0')}`).join('');
+if (cmd !== 'mcp') for (const out of [process.stdout, process.stderr]) { const w = out.write.bind(out); out.write = (chunk, ...a) => w(typeof chunk === 'string' ? chunk.replace(CTRL, hex) : chunk, ...a); }
 if (!cmd || opts.help || opts.h || cmd === 'help') { process.stdout.write(HELP); process.exit(0); }
 
 const dir = path.resolve(opts.dir || '.');
 // The port: --port, else (for share) the one this folder's board runs on, else 4900.
-const running = () => { try { return JSON.parse(fs.readFileSync(S.files(dir).server, 'utf8')).port; } catch { return undefined; } };
+const running = () => { try { return JSON.parse(S.readSafe(S.files(dir).server)).port; } catch { return undefined; } };
 const port = () => { const p = Number(opts.port ?? (cmd === 'serve' || cmd === 'share' ? rest[0] : undefined) ?? (cmd === 'share' ? running() : undefined) ?? S.DEFAULT_PORT);
   if (!Number.isInteger(p) || p < 1024 || p > 65535) fail(`not a port: ${opts.port ?? rest[0]}`); return p; };
 // Commands that write to the record need a board: a folder with an .excalidraw file or a call already under way.
@@ -100,8 +105,10 @@ async function open() {
     const [c, a] = process.platform === 'darwin' ? ['open', [url]] : process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]] : ['xdg-open', [url]];
     const b = spawn(c, a, { detached: true, stdio: 'ignore' }); b.on('error', () => console.log(`(open ${url} in your browser)`)); b.unref();
   }
-  // Everything printed to paste into a shell is one single-quoted word: a folder named a$(touch x)'b stays a name.
-  const q = v => `'${String(v).replace(/'/g, `'\\''`)}'`;
+  // Everything printed to paste into a shell is one quoted word: a folder named a$(touch x)'b stays a name. A name with a
+  // control character in it (a line break, an escape sequence) is written $'…' with each one as \xHH, which bash, zsh and
+  // macOS's sh read back as the same bytes, so it neither runs nor reaches the terminal raw.
+  const q = v => { v = String(v); return /[\0-\x1f\x7f-\x9f]/.test(v) ? `$'${v.replace(/[\\']/g, '\\$&').replace(/[\0-\x1f\x7f-\x9f]/g, hex)}'` : `'${v.replace(/'/g, `'\\''`)}'`; };
   const r = repo(), say = `${folder === process.cwd() ? '' : `--dir ${q(folder)} `}`;
   console.log(`The board is ${started ? 'open' : 'already running'}: ${url}
   board  ${file}
