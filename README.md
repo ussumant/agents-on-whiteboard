@@ -129,7 +129,7 @@ Websites open in your browser can't write to the board, read it or frame it, whe
 
 ```
 npm install      # the test browser; the package itself has no dependencies
-npm test         # every gate, on spare ports 4900 to 4926
+npm test         # every gate, on spare ports 4900 to 4927
 npm run test:share   # one real Cloudflare tunnel, on a copy of the sample board: run it by hand
 ```
 
