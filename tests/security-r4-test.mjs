@@ -159,11 +159,16 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   const B = await board(PORT3, "record");
   await B.post("guest", "/api/comment", { text: "hi\x1b]52;c;ZWNobyBwd25lZA==\x07\x1b[2J there", name: "Alex\x1b[31m" });
   const rec = run(B.dir, ["record"]);
+  // the JSON lines the CLI prints, for text kept as typed (an agent's reply holding DEL and C1 characters, which
+  // JSON.stringify leaves raw): still JSON, the same text back, and nothing raw in them
+  const odd = "del\x7f nel\u0085 csi\u009b[2J end", said = run(B.dir, ["say", odd]); let item = null; try { item = JSON.parse(said.stdout); } catch { /* not JSON */ }
   await B.stop();
   const two = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r4-two-")); for (const f of ["one\x1b[2K.excalidraw", "two\x07.excalidraw"]) fs.copyFileSync(SAMPLE, path.join(two, f));
   const err = run(two, ["open", "--no-open", "--port", String(PORT3)]);
   ok(rec.status === 0 && /there/.test(rec.stdout) && !(rec.stdout + rec.stderr).match(CTRL) && err.status === 1 && /\\x1b/.test(err.stderr) && !(err.stdout + err.stderr).match(CTRL),
     `T2b \`record\` prints a guest's escape codes as text, and so does an error naming two boards (${(rec.stdout.match(/hi.*there/) || [""])[0]} | ${err.stderr.trim().slice(0, 90)})`);
+  ok(said.status === 0 && item && item.text === odd && !said.stdout.match(CTRL),
+    `T2c \`say\` with DEL and C1 characters in its text prints one JSON line that parses back to the same text, with none of them raw (${item ? "parsed" : `not JSON: ${JSON.stringify(said.stdout.slice(70, 140))}`})`);
 }
 
 /* Item 6: a guest's picture up to the 5 MB cap goes through when their budget is idle */

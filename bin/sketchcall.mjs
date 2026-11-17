@@ -79,7 +79,10 @@ const port = () => { const p = Number(opts.port ?? (cmd === 'serve' || cmd === '
   if (!Number.isInteger(p) || p < 1024 || p > 65535) fail(`not a port: ${opts.port ?? rest[0]}`); return p; };
 // Commands that write to the record need a board: a folder with an .excalidraw file or a call already under way.
 const board = () => { if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) fail(`no folder ${dir}`); if (!S.isBoard(dir)) fail(`no board in ${dir}: put an .excalidraw file there, or run \`${N} open\``); return dir; };
-const print = o => console.log(JSON.stringify(o));
+// One JSON line. JSON.stringify leaves DEL and the C1 controls (U+007F–U+009F) raw, which the filter above would turn
+// into \xHH and break the JSON: they go out as \u00XX instead, so the line is plain text a terminal can't act on.
+const line = o => JSON.stringify(o).replace(/[\x7f-\x9f]/g, c => `\\u00${c.charCodeAt(0).toString(16)}`);
+const print = o => console.log(line(o));
 // Where people get this package: package.json's repository, as owner/name (for `/plugin marketplace add`).
 const repo = () => { try { const u = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).repository?.url || ''; return (u.match(/github\.com[/:]([\w.-]+\/[\w.-]+?)(\.git)?$/) || [])[1]; } catch { return undefined; } };
 const onPath = bin => (process.env.PATH || '').split(path.delimiter).some(d => d && [bin, `${bin}.exe`].some(b => { try { return fs.statSync(path.join(d, b)).isFile(); } catch { return false; } }));
@@ -157,12 +160,12 @@ try {
       // skipped_guest_comments counts the share link's events before it: continuing --since from it passes over them (the
       // record still has them). Otherwise the oldest event comes first. Then it waits for the next one.
       let initial = true; const backlog = [];
-      stop = follow(board(), ev => { if (initial) backlog.push(ev); else finish(0, JSON.stringify(flatEvent(ev))); }, { me: opts.presenter, since: opts.since });
+      stop = follow(board(), ev => { if (initial) backlog.push(ev); else finish(0, line(flatEvent(ev))); }, { me: opts.presenter, since: opts.since });
       initial = false;
       if (backlog.length) {
         const byTime = backlog.map((e, i) => [e, i]).sort(([a, i], [b, j]) => String(a.meta.ts).localeCompare(String(b.meta.ts)) || i - j).map(([e]) => e);
         const mine = byTime.find(e => e.meta.via !== 'link'), pick = mine || byTime[0], skipped = mine ? byTime.indexOf(mine) : 0;
-        finish(0, JSON.stringify({ ...flatEvent(pick), ...(skipped ? { skipped_guest_comments: skipped } : {}) }));
+        finish(0, line({ ...flatEvent(pick), ...(skipped ? { skipped_guest_comments: skipped } : {}) }));
       }
       if (!done) process.stderr.write(`waiting for the next comment on ${path.basename(dir)}\n`);
       break;
