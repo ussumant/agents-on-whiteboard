@@ -1,0 +1,30 @@
+{
+  "name": "sketchcall",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Comment on a whiteboard. Your coding agent answers on it.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "sketchcall": "bin/sketchcall.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "examples/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test:pack": "node tests/pack-test.mjs"
+  },
+  "keywords": [
+    "excalidraw",
+    "whiteboard",
+    "mcp",
+    "agent",
+    "claude-code",
+    "codex"
+  ]
+}
