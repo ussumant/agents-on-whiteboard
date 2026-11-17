@@ -12,11 +12,24 @@ You need Node 20 or later.
 
 ### Claude Code: the plugin
 
+In a Claude Code session:
+
 ```
 /plugin install sketchcall --marketplace ussumant/sketchcall
 ```
 
-On Claude Code before 2.1.275, add the marketplace first: `/plugin marketplace add ussumant/sketchcall`, then `/plugin install sketchcall@sketchcall`.
+Or from your shell:
+
+```
+claude plugin install sketchcall --marketplace ussumant/sketchcall
+```
+
+Those one-line forms need a recent Claude Code (2.1.275 or later in a session, 2.1.292 or later in the shell). On an older one, add the marketplace first, then install from it:
+
+```
+claude plugin marketplace add ussumant/sketchcall
+claude plugin install sketchcall@sketchcall
+```
 
 Then, in the folder with your diagram, ask Claude:
 

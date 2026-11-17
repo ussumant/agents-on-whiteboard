@@ -1,6 +1,6 @@
 {
   "name": "sketchcall",
-  "version": "0.1.0",
+  "displayName": "sketchcall",
   "description": "Comment on a whiteboard. Your coding agent answers on it: a live Excalidraw board on your own computer, where Claude hears each comment and replies beside the box it is about.",
   "author": {
     "name": "sketchcall contributors"

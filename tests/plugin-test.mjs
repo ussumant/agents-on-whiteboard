@@ -13,7 +13,7 @@ const pkg = read("package.json"), plugin = read(".claude-plugin/plugin.json"), m
 const entry = (market.plugins || []).find((p) => p.name === plugin.name);
 
 ok(pkg.name === NAME && plugin.name === NAME && entry && entry.source === "./", `1 package, plugin and marketplace entry are all "${NAME}", and the entry is the repo itself (${entry && entry.source})`);
-ok(plugin.version === pkg.version && !entry.version, `1b plugin.json's version matches package.json (${plugin.version} / ${pkg.version}), and the entry doesn't set its own`);
+ok(!plugin.version && !entry.version && plugin.displayName, "1b neither plugin.json nor the entry pins a version, so installs follow the git commit; plugin.json has a displayName");
 ok(market.owner && market.owner.name && market.description, "1c the marketplace has an owner name and a description");
 ok(!pkg.dependencies && pkg.bin[NAME] === `bin/${NAME}.mjs` && /^>=\s*20/.test(pkg.engines.node) && /github\.com\/[\w.-]+\/[\w.-]+/.test(pkg.repository.url) && pkg.homepage && pkg.bugs.url && pkg.license === "MIT",
   "1d package.json: bin, node >= 20, repository, homepage, bugs, MIT, no runtime dependencies");
@@ -22,6 +22,15 @@ ok(!pkg.dependencies && pkg.bin[NAME] === `bin/${NAME}.mjs` && /^>=\s*20/.test(p
 // a lockfile makes it install the packages there, dev ones included (it put 56 MB of the test browser in every cache)
 const tracked = spawnSync("git", ["ls-files", "package-lock.json", "npm-shrinkwrap.json", "bun.lock"], { cwd: ROOT, encoding: "utf8" }).stdout.trim();
 ok(!tracked, `1e no lockfile is tracked at the root, so installing the plugin installs no packages (${tracked || "none"})`);
+
+// 1f the MCP Registry entry (server.json): the same name as package.json's mcpName, the same version, and the npm package
+// started with its `mcp` argument (what `npx -y sketchcall mcp` runs). It isn't shipped in the npm package.
+const reg = read("server.json"), rp = (reg.packages || [])[0] || {};
+ok(reg.$schema === "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json" && reg.name === pkg.mcpName && /^io\.github\.[\w-]+\/[\w.-]+$/.test(reg.name)
+  && reg.title === NAME && reg.description.length <= 100 && reg.repository.source === "github" && reg.repository.url === pkg.repository.url.replace(/^git\+/, "").replace(/\.git$/, "")
+  && reg.version === pkg.version && rp.registryType === "npm" && rp.identifier === pkg.name && rp.version === pkg.version && rp.transport.type === "stdio"
+  && JSON.stringify(rp.packageArguments) === JSON.stringify([{ type: "positional", value: "mcp" }]) && !pkg.files.includes("server.json"),
+  `1f server.json matches package.json (${reg.name} ${reg.version}, npm ${rp.identifier} started with "mcp", description ${reg.description.length} characters)`);
 
 // 2 the MCP server, run exactly as plugin.json declares it
 const srv = plugin.mcpServers[NAME], sub = (s) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", ROOT);
@@ -70,6 +79,9 @@ ok(!stray.length, `6 the code names the app only through NAME (${stray.length ? 
 const hasClaude = spawnSync("claude", ["--version"], { encoding: "utf8" }).status === 0;
 if (!hasClaude) console.log("SKIP 7 claude plugin validate: the claude CLI isn't installed here");
 else {
-  const v = spawnSync("claude", ["plugin", "validate", "--strict", ROOT], { encoding: "utf8", timeout: 60000 }), m = spawnSync("claude", ["plugin", "validate", "--strict", path.join(ROOT, ".claude-plugin", "marketplace.json")], { encoding: "utf8", timeout: 60000 });
-  ok(v.status === 0 && /Validation passed/.test(v.stdout) && m.status === 0 && /Validation passed/.test(m.stdout), `7 claude plugin validate --strict passes on the plugin and on the marketplace (exit ${v.status}, ${m.status})`);
+  // not --strict: plugin.json leaves out `version` on purpose, and that is the only warning allowed
+  const v = spawnSync("claude", ["plugin", "validate", "--json", ROOT], { encoding: "utf8", timeout: 60000 });
+  let j = null; try { j = JSON.parse(v.stdout); } catch { /* checked below */ }
+  const all = j ? [j.manifest, ...(j.contents || [])] : [], errors = all.flatMap((x) => x.errors || []), warnings = all.flatMap((x) => x.warnings || []);
+  ok(v.status === 0 && j && j.success && !errors.length && warnings.every((w) => /(^|→ )version$/.test(w.path)), `7 claude plugin validate passes on the plugin and its marketplace, its only warnings about the version left out (${warnings.length} warnings: ${[...new Set(warnings.map((w) => w.path))].join("; ")})`);
 }

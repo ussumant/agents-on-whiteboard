@@ -103,7 +103,7 @@ async function open() {
   call   ${S.files(folder).live}  (the comments, the replies and the board as it is now)
 
 To have your agent answer on it, add it once:
-  Claude Code  ${r ? `/plugin install ${N} --marketplace ${r}\n               (or: claude mcp add ${N} -- npx -y ${N} mcp)` : `claude mcp add ${N} -- npx -y ${N} mcp`}
+  Claude Code  ${r ? `/plugin install ${N} --marketplace ${r}\n               (older: claude plugin marketplace add ${r}, then claude plugin install ${N}@${N};\n                or: claude mcp add ${N} -- npx -y ${N} mcp)` : `claude mcp add ${N} -- npx -y ${N} mcp`}
   Codex        codex mcp add ${N} -- npx -y ${N} mcp
   Cursor       .cursor/mcp.json: {"mcpServers": {"${N}": {"command": "npx", "args": ["-y", "${N}", "mcp"]}}}
 Then tell it:  Open the ${N} board in ${folder} (port ${p}), then wait for my comments and answer each one on the board.
