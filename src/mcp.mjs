@@ -28,12 +28,13 @@ export function runMcp({ channels = false } = {}) {
   const out = m => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\n');
   // What reaches the agent's session from a commenter. Each meta value is one line of at most 120 characters with no quotes
   // or angle brackets, which could break out of the <channel …> tag it is shown in; the text keeps its line breaks and
-  // loses every other control character. Ids pass only when they look like ids (idOf).
-  const metaOf = v => String(v).replace(BREAKS, ' ').replace(/"/g, "'").replace(/</g, '‹').replace(/>/g, '›').replace(/\s+/g, ' ').trim().slice(0, 120);
+  // loses every other control character. Ids pass only when they look like ids (idOf); box_ids keeps every id whole
+  // (at most 50, each id-shaped), so the agent never gets half an id.
+  const metaOf = (v, k) => { const t = String(v).replace(BREAKS, ' ').replace(/"/g, "'").replace(/</g, '‹').replace(/>/g, '›').replace(/\s+/g, ' ').trim(); return k === 'box_ids' ? t : t.slice(0, 120); };
   const push = (content, meta) => out({ method: 'notifications/claude/channel', params: { content: String(content).replace(BREAKS, b => b.replace(/[^\n]/g, ' ')),
-    meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, metaOf(v)]).filter(([, v]) => v !== '')) } });
+    meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, metaOf(v, k)]).filter(([, v]) => v !== '')) } });
   const idOf = v => typeof v === 'string' && ID.test(v) ? v : undefined;
-  const idsOf = v => Array.isArray(v) ? v.map(idOf).filter(Boolean).join(',') : undefined;
+  const idsOf = v => Array.isArray(v) ? v.slice(0, 50).map(idOf).filter(Boolean).join(',') : undefined;
 
   // A board: a folder holding an .excalidraw file (or a call already under way), or the .excalidraw file itself.
   function boardOf(dir) {

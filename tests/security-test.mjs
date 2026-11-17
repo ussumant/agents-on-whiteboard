@@ -96,6 +96,12 @@ if (opened.err) console.log("board_open:", opened.text);
   ok(!!KEY && !!GKEY && KEY !== GKEY && homeOnGuest === 403 && guestOnHome === 403, `H1g the link's key and this computer's key are different and don't cross (${homeOnGuest}, ${guestOnHome})`);
   const noCookie = (await hit(PORT, "/", { host: TUNNEL, headers: { "cf-connecting-ip": "203.0.113.7" } })).status;
   ok(noCookie === 403, `H1h the share link still needs its own key (${noCookie})`);
+  // a tunnel that hands the server its own Host (127.0.0.1) instead of the link's: the link's address in share.json is the Origin
+  const rewritten = { "cf-connecting-ip": "203.0.113.7", cookie: `bk=${LINK}` };
+  const viaTunnel = (origin) => hit(PORT, "/api/comment", { method: "POST", host: `127.0.0.1:${PORT}`, body: { text: "through a tunnel that rewrites Host", name: "Alex" }, headers: { ...asPage(GKEY, origin), ...rewritten } });
+  const g1 = (await viaTunnel(`https://${TUNNEL}`)).status, g2 = (await viaTunnel("https://other.trycloudflare.com")).status;
+  const tk = ((await hit(PORT, "/", { host: `127.0.0.1:${PORT}`, headers: rewritten })).body.match(/var BOARD = (\{[^\n]*\});\n/) || [])[1];
+  ok(g1 === 200 && g2 === 403 && !!tk && JSON.parse(tk).token === GKEY, `H1k behind a tunnel that rewrites Host, the link's own Origin works (${g1}), another tunnel's doesn't (${g2}), and the page still gets the link's key`);
   ok(!/sendBeacon/.test(fs.readFileSync(path.join(ROOT, "src", "board.html"), "utf8")), "H1i the page never uses sendBeacon (it can't carry the key)");
 }
 
@@ -148,8 +154,14 @@ if (opened.err) console.log("board_open:", opened.text);
   await poll(() => M.notes.slice(p).some((x) => x.meta.comment_id === "cplantM5"), 5000);
   const m = M.notes.slice(p).find((x) => x.meta.comment_id === "cplantM5");
   const vals = m ? Object.values(m.meta) : [];
-  ok(!!m && vals.every((v) => !/[\x00-\x1f\x7f"<>]/.test(v) && v.length <= 120) && m.meta.box_id === undefined && m.meta.box_ids === "api" && !/\x07/.test(m.content),
+  ok(!!m && Object.entries(m.meta).every(([k, v]) => !/[\x00-\x1f\x7f"<>]/.test(v) && (k === "box_ids" || v.length <= 120)) && m.meta.box_id === undefined && m.meta.box_ids === "api" && !/\x07/.test(m.content),
     `M5 channel meta has no control characters, quotes or angle brackets, each ≤ 120, and only well-formed ids (${m && JSON.stringify(m.meta).slice(0, 220)})`);
+  // box_ids keeps every id whole: 30 real-looking 21-character ids, not five and a half
+  const ids = Array.from({ length: 30 }, (_, i) => `Ab3dE5gH7jK9mN1pQ3s${String(i).padStart(2, "0")}`), p2 = M.notes.length;
+  fs.appendFileSync(F.thread, JSON.stringify({ kind: "comment", id: "cplantM5b", ts: new Date().toISOString(), author: "sam", text: "an area", on: { ids, label: "area: many" } }) + "\n");
+  await poll(() => M.notes.slice(p2).some((x) => x.meta.comment_id === "cplantM5b"), 5000);
+  const m2 = M.notes.slice(p2).find((x) => x.meta.comment_id === "cplantM5b");
+  ok(!!m2 && m2.meta.box_ids === ids.join(","), `M5b box_ids carries every id whole (${m2 && m2.meta.box_ids.split(",").length} of 30)`);
 }
 
 /* M6 and L7: the page's headers */

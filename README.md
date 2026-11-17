@@ -20,6 +20,8 @@ they leave open.
   scripts and its fonts from unpkg.com while it runs, and those can't be pinned the same way. The page sends no
   Content-Security-Policy beyond `frame-ancestors`. Serving Excalidraw from the package itself comes with the move to
   Excalidraw 0.18.
+- **Very long canvas text isn't kept.** Text over 10,000 characters in one element on the board isn't saved or shared with
+  the other pages (the agent's tools refuse it up front).
 - **Every page rereads the whole record.** Pages fetch all of `live/thread.jsonl` on each update. The record stops taking
   comments from pages at 10 MB.
 - **Open pages aren't capped.** Each open page holds one long poll. Nothing limits how many a link guest can open.

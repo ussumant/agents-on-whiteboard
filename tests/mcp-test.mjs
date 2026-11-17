@@ -63,6 +63,14 @@ try {
   ok(!r6.err && r6.json.author === "claude" && r6.json.on && r6.json.on.id === "queue", "6 board_say reply_to puts the reply on the comment's box");
   await sleep(600);
   ok(C.notes.length === 1, `6b the agent's own reply never comes back to it (${C.notes.length} pushes)`);
+  // 6c the agent's new elements get ids and text the server takes back from the pages: an odd ref would show on every page
+  // and never be saved
+  const n1 = await C.call("board_note", { ref: "note 1", x: 0, y: -500, text: "x" });
+  const n2 = await C.call("board_note", { ref: "n-long", x: 0, y: -500, text: "t".repeat(10001) });
+  const n3 = await C.call("board_tour", { title: "t", tour_id: "bad id", steps: [{ target: "api", text: "x" }] });
+  const n4 = await C.call("board_note", { ref: "n-ok", x: 0, y: -500, text: "a note the server keeps" });
+  ok(n1.err && /ref must be/.test(n1.text) && n2.err && /10,000/.test(n2.text) && n3.err && /tour_id must be/.test(n3.text) && !n4.err,
+    `6c a ref like "note 1", text over 10,000 characters and a tour_id like "bad id" are refused; ref "n-ok" is fine (${[n1, n2, n3].map((x) => x.text.slice(0, 40)).join(" | ")})`);
 } finally {
   for (const s of sessions) s.p.kill();
   for (const pid of listeners()) try { process.kill(Number(pid)); } catch {}

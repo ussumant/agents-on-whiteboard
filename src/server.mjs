@@ -82,7 +82,13 @@ export function claudeWrote(dir) {
   }
   return (id, t) => mine.has(id) || edits[id] === flat(t);
 }
-export const op = (dir, o) => append(dir, { ...o, kind: 'op', id: nextId('op'), ts: now() });   // element ids go in op.ref (note/arrow) or op.target
+// Element ids go in op.ref (note/arrow) or op.target. A new element's id must be one the server takes back from the pages
+// (id-shaped, with room for its __label), and its text one it saves, or the note shows on every page and is never kept.
+export const op = (dir, o) => {
+  if (o.ref != null && !(typeof o.ref === 'string' && ID.test(o.ref) && o.ref.length <= 120)) throw new Error(`ref must be letters, digits, _ - . or : (at most 120), like "note-1" (got ${JSON.stringify(o.ref)})`);
+  if (o.text != null && String(o.text).length > 10000) throw new Error('text is at most 10,000 characters');
+  return append(dir, { ...o, kind: 'op', id: nextId('op'), ts: now() });
+};
 // Who wrote it: a name a person typed into the page. "claude" is reserved for the CLI and the MCP tools, so a page can
 // never post as the agent.
 // A name is folded to its plain letters first (full-width letters, accents, zero-width marks and Cyrillic or Greek
@@ -127,6 +133,7 @@ export function tour(dir, t, by, takeOver) {
     if (!q) throw new Error(`step ${i + 1}: ask needs a question, {question: "…"}`);
     return { ...s, ask: { question: q.slice(0, 300) } };
   });
+  if (!Array.isArray(t) && t.tour_id != null && !(typeof t.tour_id === 'string' && ID.test(t.tour_id))) throw new Error(`tour_id must be letters, digits, _ - . or : (got ${JSON.stringify(t.tour_id)})`);
   const me = presenterName(by), held = heldBy(dir, me);
   if (held && !takeOver) throw new Error(`${held.who} is presenting "${held.title}" (last move ${held.ago} min ago). Wait until they finish: the board frees up after ${TOUR_HOLD_MIN} min with no move. If the person asked you to present now, pass take_over: true.`);
   return op(dir, withPresenter({ op: 'tour', tour_id: (!Array.isArray(t) && t.tour_id) || nextId('t'), title: String((!Array.isArray(t) && t.title) || 'Tour').slice(0, 120), steps }, me));
