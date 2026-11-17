@@ -61,20 +61,29 @@ const LINEAR = new Set(['arrow', 'line']);
 const num = v => typeof v === 'number' && Number.isFinite(v);
 const opt = (v, ok) => v === undefined || v === null || ok(v);
 const str = n => v => typeof v === 'string' && v.length <= n;
-const points = (p, min) => Array.isArray(p) && p.length >= min && p.length <= 10000 && p.every(q => Array.isArray(q) && q.length === 2 && num(q[0]) && num(q[1]));
+// Every number has a size, not only a type. A finite but huge shape (an ellipse 1e15 wide, a hatched rectangle 1e12 wide)
+// took Excalidraw's hand-drawn renderer forever and froze every page that showed it. Measured in a page: a hatched or
+// cross-hatched shape 1e6 wide still blocks it for up to 1.7 s, and 1e5 wide for 0.2 s; so positions stay within ±1e6
+// and sizes and points within 1e5.
+const within = n => v => num(v) && Math.abs(v) <= n;
+const range = (lo, hi) => v => num(v) && v >= lo && v <= hi;
+const POS = 1e6, SIZE = 1e5;
+const points = (p, min) => Array.isArray(p) && p.length >= min && p.length <= 10000 && p.every(q => Array.isArray(q) && q.length === 2 && within(SIZE)(q[0]) && within(SIZE)(q[1]));
 // A value nested past `n` levels of objects or arrays (an element's points are 2: the list, then each point).
 const deeper = (v, n) => !!v && typeof v === 'object' && (n <= 0 || Object.values(v).some(x => deeper(x, n - 1)));
 export function shapeOk(e) {
   if (!e || typeof e !== 'object' || Array.isArray(e) || !TYPES.has(e.type)) return false;
-  if (!['x', 'y', 'width', 'height', 'angle', 'strokeWidth', 'roughness', 'opacity', 'seed', 'updated', 'baseline'].every(k => opt(e[k], num))) return false;
-  if (!['fontSize', 'lineHeight'].every(k => opt(e[k], v => num(v) && v > 0)) || !opt(e.fontFamily, num)) return false;
+  if (!['x', 'y'].every(k => opt(e[k], within(POS))) || !['width', 'height', 'baseline'].every(k => opt(e[k], within(SIZE)))) return false;
+  if (!opt(e.angle, within(1e4)) || !opt(e.strokeWidth, range(0.5, 100)) || !opt(e.roughness, range(0, 5)) || !opt(e.opacity, range(0, 100))) return false;
+  if (!opt(e.fontSize, range(1, 1000)) || !opt(e.lineHeight, range(0.5, 5)) || !opt(e.fontFamily, range(0, 100)) || !['seed', 'updated'].every(k => opt(e[k], num))) return false;
+  if (!opt(e.scale, q => Array.isArray(q) && q.length === 2 && q.every(within(10))) || !opt(e.lastCommittedPoint, q => Array.isArray(q) && q.length === 2 && q.every(within(SIZE)))) return false;
   if (!['text', 'originalText'].every(k => opt(e[k], str(10000)))) return false;
   if (!['strokeColor', 'backgroundColor', 'fillStyle', 'strokeStyle', 'textAlign', 'verticalAlign', 'status', 'startArrowhead', 'endArrowhead', 'frameId', 'name'].every(k => opt(e[k], str(200)))) return false;
   if (!['isDeleted', 'locked'].every(k => opt(e[k], v => typeof v === 'boolean')) || !opt(e.link, str(2000))) return false;
   if (!opt(e.groupIds, g => Array.isArray(g) && g.length <= 100 && g.every(str(128)))) return false;
   if (!opt(e.boundElements, b => Array.isArray(b) && b.length <= 1000 && b.every(x => x && typeof x === 'object' && str(128)(x.id) && str(32)(x.type)))) return false;
   if (!opt(e.roundness, q => typeof q === 'object' && num(q.type) && opt(q.value, num))) return false;
-  if (!['startBinding', 'endBinding'].every(k => opt(e[k], q => typeof q === 'object' && str(128)(q.elementId) && num(q.focus) && num(q.gap)))) return false;
+  if (!['startBinding', 'endBinding'].every(k => opt(e[k], q => typeof q === 'object' && str(128)(q.elementId) && within(10)(q.focus) && within(SIZE)(q.gap)))) return false;
   if (!opt(e.customData, c => typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length <= 16 && Object.values(c).every(v => v === null || typeof v === 'boolean' || num(v) || str(200)(v)))) return false;
   if (LINEAR.has(e.type) ? !points(e.points, 2) : e.type === 'freedraw' ? !points(e.points, 1) || !opt(e.pressures, q => Array.isArray(q) && q.length <= 10000 && q.every(num)) : e.points !== undefined) return false;
   if (e.containerId != null && (typeof e.containerId !== 'string' || e.containerId === e.id)) return false;
@@ -84,9 +93,15 @@ export function shapeOk(e) {
 export const okElement = (e, known = id => ID.test(id)) => shapeOk(e) && typeof e.id === 'string' && known(e.id)
   && Number.isInteger(e.version) && e.version >= 0 && e.version < 1e9 && Number.isSafeInteger(e.versionNonce)
   && (e.containerId == null || known(e.containerId)) && (e.fileId == null || (typeof e.fileId === 'string' && /^[\w-]{1,128}$/.test(e.fileId)));
-// What is kept of an element that passed: never `validated` (Excalidraw draws an embed that says so), and no link that
-// starts // or /\ (Excalidraw opens those in the board's own tab, on another site).
-export const cleanElement = e => { const { validated, ...out } = e; if (typeof out.link === 'string' && /^[\s\p{Cc}]*[/\\]{2}/u.test(out.link)) out.link = null; return out; };
+// A link is kept only when it is an absolute http(s) address with nothing hidden in it. Excalidraw cleans a link again in
+// the page (it decodes &#47; and &tab;, and drops control, space and zero-width characters), so "/&#47;evil.test" became
+// "//evil.test" there and opened another site in the board's own tab. A link that would change in that cleaning is
+// dropped, along with relative links and every other scheme.
+export const linkOk = l => typeof l === 'string' && l.length <= 2000 && !/[\p{Cc}\p{Cf}\p{Z}\s]|&[#\w]+;/u.test(l)
+  && (() => { try { const u = new URL(l); return (u.protocol === 'https:' || u.protocol === 'http:') && l.toLowerCase().startsWith(`${u.protocol}//`); } catch { return false; } })();
+// What is kept of an element that passed: never `validated` (Excalidraw draws an embed that says so), and only a link
+// that passes linkOk.
+export const cleanElement = e => { const { validated, ...out } = e; if (out.link != null && !linkOk(out.link)) out.link = null; return out; };
 // One element is at most 64 KB as JSON (a line or a freehand stroke, with up to 10,000 points, 256 KB).
 export const ELEMENT_MAX = e => LINEAR.has(e.type) || e.type === 'freedraw' ? 256e3 : 64e3;
 // A board file or scene.json as it starts the server: a person's own file may have odd ids or no versionNonce, so only
@@ -104,7 +119,8 @@ const nextId = p => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 
 export const append = (dir, item) => { fs.mkdirSync(files(dir).live, { recursive: true }); fs.appendFileSync(files(dir).thread, JSON.stringify(item) + '\n'); return item; };
 export const thread = dir => fs.existsSync(files(dir).thread) ? fs.readFileSync(files(dir).thread, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l)) : [];
 // `by` is the presenting session's name: a reply from "Look session" says so in the panel and on the tour card.
-export const say = (dir, text, on = null, by) => append(dir, withPresenter({ kind: 'comment', id: nextId('c'), ts: now(), author: 'claude', text, on }, by));
+// `replyTo` is the id of the comment it answers: the record pairs them by it, never by the box.
+export const say = (dir, text, on = null, by, replyTo) => append(dir, withPresenter({ kind: 'comment', id: nextId('c'), ts: now(), author: 'claude', text, on, ...(replyTo ? { reply_to: replyTo } : {}) }, by));
 // Presenters: each agent session presents under its own name, set by board_open {presenter} or the CLI's --presenter,
 // never by a page (pages can't write ops). An op without one is Claude's, so older records read as before.
 export const presenterName = n => { const s = String(n ?? '').replace(/[<>"`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32); return !s || s.toLowerCase() === 'claude' ? 'Claude' : s; };
@@ -313,9 +329,12 @@ export function importFiles(dir, file) {
 // Only this code writes the record's structure: the headings and the time, author and reply lines. A comment's or a
 // reply's text goes in as a quote, every line of it, with HTML escaped and a leading # escaped, so a commenter's
 // "## 7. …" or "**Host:** Approved" stays inside their own quote and can't read as an entry or a reply.
-const mdText = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-const mdName = s => mdText(oneLine(s)).replace(/[\\`*_[\]]/g, '\\$&');
-const quoted = t => String(t ?? '').split(/\r\n|\r|\n|\u2028|\u2029/).map(l => `> ${mdText(l).replace(/^(\s*)#/, '$1\\#')}`).join('\n');
+// Every Markdown mark in someone's words is escaped too: a "[docs]: https://…" line in a guest's comment is a link
+// definition for the whole document (CommonMark collects them from inside quotes), so it rewrote the owner's [docs] link
+// elsewhere in the record, and "![x](…)" showed a remote image to whoever read it.
+const mdText = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[\\`*_[\](){}#|!~+]/g, '\\$&');
+const mdName = s => mdText(oneLine(s));
+const quoted = t => String(t ?? '').split(/\r\n|\r|\n|\u2028|\u2029/).map(l => `> ${mdText(l)}`).join('\n');
 export function record(dir) {
   const { scene: SF, live: LV } = files(dir), PICS = path.join(LV, 'files');
   const items = thread(dir).filter(x => x.kind === 'comment');
@@ -325,13 +344,21 @@ export function record(dir) {
     .map(id => els.find(e => e.id === id && e.type === 'image' && !e.isDeleted)).filter(Boolean)
     .map(e => { const f = saved.find(n => n.startsWith(e.fileId + '.')); return f ? `![picture](${CALL}/files/${f})` : null; }).filter(Boolean);
   const out = ['# The board\'s record', '', `> Every comment on this board, word for word, from \`${CALL}/thread.jsonl\`. ${items.length} comments.`, ''];
+  // Each reply goes under the comment it answers (reply_to). An older reply without one goes under the latest comment on
+  // the same box before it, and nowhere else: pairing by box put the agent's answer to the owner under a guest's question.
+  const replies = new Map();
+  items.forEach((x, i) => {
+    if (x.author !== 'claude') return;
+    const to = x.reply_to ? items.find(c => c.id === x.reply_to && c.author !== 'claude')
+      : items.slice(0, i).reverse().find(c => c.author !== 'claude' && x.on && JSON.stringify(c.on) === JSON.stringify(x.on));
+    if (to) { if (!replies.has(to.id)) replies.set(to.id, []); replies.get(to.id).push(x); }
+  });
   let n = 0;
-  items.forEach((c, i) => {
+  items.forEach(c => {
     if (c.author === 'claude') return;
-    const reply = items.slice(i + 1).find(x => x.author === 'claude' && JSON.stringify(x.on) === JSON.stringify(c.on));
     out.push(`## ${++n}. ${mdName((c.on && c.on.label) || 'the whole board')}`, '', `*${mdName(c.ts)} · ${mdName(shown(c.author))}*`, '', ...pics(c).flatMap(p => [p, '']),
       `**${mdName(shown(c.author))}:**`, '', quoted(c.text), '');
-    if (reply) out.push(`**${mdName(presenterOf(reply))} replied:**`, '', quoted(reply.text), '');
+    for (const reply of replies.get(c.id) || []) out.push(`**${mdName(presenterOf(reply))} replied:**`, '', quoted(reply.text), '');
   });
   return out.join('\n') + '\n';
 }
@@ -350,17 +377,31 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const els = new Map(), by = new Map();   // id → element; id → [author, came through the link] of whoever last changed it
   // The scene's size: at most 5,000 elements (deleted ones too) and 20 MB. When it's full, the oldest deleted elements make
   // room; past that, new elements aren't taken.
-  const SCENE_MAX = 5000, SCENE_BYTES = 20e6, sizes = new Map();
-  let sceneBytes = 0;
-  const put = (e, size) => { sceneBytes += size - (sizes.get(e.id) || 0); sizes.set(e.id, size); els.set(e.id, e); };
-  const room = (id, size) => {
-    const fits = () => (els.has(id) || els.size < SCENE_MAX) && sceneBytes - (sizes.get(id) || 0) + size <= SCENE_BYTES;
-    if (fits()) return true;
-    for (const d of [...els.values()].filter(e => e.isDeleted && e.id !== id).sort((a, b) => (a.updated || 0) - (b.updated || 0))) {
-      sceneBytes -= sizes.get(d.id) || 0; sizes.delete(d.id); els.delete(d.id);
+  // The share link gets half of each (elements last changed through it, and their bytes), so a guest who fills the board
+  // still leaves this computer room to draw.
+  const SCENE_MAX = 5000, SCENE_BYTES = 20e6, LINK_MAX = SCENE_MAX / 2, LINK_BYTES = SCENE_BYTES / 2, sizes = new Map(), linkSide = new Set();
+  let sceneBytes = 0, linkBytes = 0;
+  const put = (e, size, far = false) => {
+    const old = sizes.get(e.id) || 0;
+    sceneBytes += size - old;
+    if (linkSide.has(e.id)) linkBytes -= old;
+    if (far) { linkSide.add(e.id); linkBytes += size; } else linkSide.delete(e.id);
+    sizes.set(e.id, size); els.set(e.id, e);
+  };
+  const drop = id => { const sz = sizes.get(id) || 0; sceneBytes -= sz; if (linkSide.delete(id)) linkBytes -= sz; sizes.delete(id); els.delete(id); };
+  // Room for one element of a post. The oldest deleted elements make room, listed once per post (listing them for every
+  // element of a 100,000-element post on a full board held the server for seconds).
+  const roomFor = () => {
+    let evict = null, at = 0;
+    return (id, size, far) => {
+      const isNew = !els.has(id), old = sizes.get(id) || 0, mine = linkSide.has(id);
+      if (far && ((!mine && linkSide.size >= LINK_MAX) || linkBytes - (mine ? old : 0) + size > LINK_BYTES)) return false;
+      const fits = () => (!isNew || els.size < SCENE_MAX) && sceneBytes - old + size <= SCENE_BYTES;
       if (fits()) return true;
-    }
-    return false;
+      if (!evict) evict = [...els.values()].filter(e => e.isDeleted).sort((a, b) => (a.updated || 0) - (b.updated || 0)).map(e => e.id);
+      while (at < evict.length) { const d = evict[at++]; if (d !== id && els.has(d)) { drop(d); if (fits()) return true; } }
+      return false;
+    };
   };
   const load = e => { if (!loadable(e)) return false; const c = cleanElement(e); put(c, JSON.stringify(c).length); return true; };
   let start = null;
@@ -388,20 +429,23 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // Each page served gets its own page id and a secret that goes with it, issued here and never sent to anyone else. The
   // id is how the room knows a page (other pages see it); the secret is what lets a call act as that page, so a guest who
   // learns the owner's page id from the room still can't post, point, leave or rename as it. Each side keeps its own 500
-  // (the least recently heard from go first), so page loads through the link can only push out link pages, and the link
-  // gets at most 60 new pages a minute. A page the server forgot asks to be reloaded.
-  const pages = { home: new Map(), link: new Map() }, minted = [];   // page id → secret; when the link last minted pages
+  // (the least recently heard from go first, and never one heard from in the last minute), so page loads through the link
+  // can only push out link pages, and the link gets at most 60 new pages a minute. A page the server forgot asks to be
+  // reloaded.
+  const pages = { home: new Map(), link: new Map() }, minted = [];   // page id → {secret, seen}; when the link last minted pages
   const issue = far => {
     const side = far ? pages.link : pages.home, t = Date.now();
-    if (far) { while (minted.length && t - minted[0] > 60000) minted.shift(); if (minted.length >= 60) return null; minted.push(t); }
+    if (far) { while (minted.length && t - minted[0] > 60000) minted.shift(); if (minted.length >= 60) return null; }
+    if (side.size >= 500) { const [oldest, p] = side.entries().next().value; if (t - p.seen < 60000) return null; side.delete(oldest); }
+    if (far) minted.push(t);
     const c = crypto.randomBytes(9).toString('base64url'), secret = crypto.randomBytes(18).toString('base64url');
-    side.set(c, secret); if (side.size > 500) side.delete(side.keys().next().value);
+    side.set(c, { secret, seen: t });
     return { page: c, pageKey: secret };
   };
   const pageOk = (req, c, far) => {
-    const side = far ? pages.link : pages.home, secret = typeof c === 'string' && side.get(c);
-    if (!secret || !same(req.headers['x-sketchcall-page'] || '', secret)) return false;
-    side.delete(c); side.set(c, secret); return true;   // most recently heard from
+    const side = far ? pages.link : pages.home, p = typeof c === 'string' && side.get(c);
+    if (!p || !same(req.headers['x-sketchcall-page'] || '', p.secret)) return false;
+    side.delete(c); side.set(c, { secret: p.secret, seen: Date.now() }); return true;   // most recently heard from
   };
   const page = (far, ids) => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home, ...ids }).replace(/</g, '\\u003c'));
   // Element ids a page may send: id-shaped ones, or an odd one the board's own file already has.
@@ -440,10 +484,12 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // The record stops taking comments and answers from pages at 10 MB (the agent's own lines still go in), and from the
   // share link at half that, so a guest can't fill it and lock this computer out.
   const recordFull = () => { try { return fs.statSync(THREAD).size >= 10e6; } catch { return false; } };
-  let linkBytes = 0;
-  try { for (const l of fs.readFileSync(THREAD, 'utf8').split('\n')) if (l.includes('"via":"link"')) try { if (JSON.parse(l).via === 'link') linkBytes += Buffer.byteLength(l) + 1; } catch {} } catch {}
-  const linkFull = far => far && linkBytes >= 5e6;
-  const appended = (item, far) => { if (far) linkBytes += Buffer.byteLength(JSON.stringify(item)) + 1; return item; };
+  let linkRecordBytes = 0;
+  try { for (const l of fs.readFileSync(THREAD, 'utf8').split('\n')) if (l.includes('"via":"link"')) try { if (JSON.parse(l).via === 'link') linkRecordBytes += Buffer.byteLength(l) + 1; } catch {} } catch {}
+  const linkFull = far => far && linkRecordBytes >= 5e6;
+  let tokens = 8e6, refilled = Date.now();
+  const linkBudget = n => { const t = Date.now(); tokens = Math.min(8e6, tokens + (t - refilled) * 3000); refilled = t; if (n > tokens) return false; tokens -= n; return true; };
+  const appended = (item, far) => { if (far) linkRecordBytes += Buffer.byteLength(JSON.stringify(item)) + 1; return item; };
 
   // Who is in the room and what changed. Every page long-polls /api/changes: the poll returns at once when something it
   // hasn't seen is waiting, else it waits up to 25 s. (A Cloudflare quick tunnel delivers the headers of server-sent
@@ -474,21 +520,37 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   let saveTimer = null, diffTimer = null;
   const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(safe('save', () => fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] }))), 300); };
   // Text people write reaches events.log once they pause (2.5 s), so a word typed live is one line, not one per key.
-  const diffSoon = () => { clearTimeout(diffTimer); diffTimer = setTimeout(safe('text check', diffTexts), 2500); };
+  // (Never more than 10 s late: someone posting without a pause doesn't put everyone's lines off for good.)
+  let diffFirst = 0;
+  const diffSoon = () => { const t = Date.now(); if (!diffTimer) diffFirst = t; clearTimeout(diffTimer); diffTimer = setTimeout(() => { diffTimer = null; safe('text check', diffTexts)(); }, t - diffFirst > 7500 ? 0 : 2500); };
   function diffTexts() {
     const texts = textsOf([...els.values()]);
     // The first seed of a server that had no board is nobody writing: stay quiet. After that, every new text is someone's.
     if (!lastTexts) { lastTexts = texts; return; }
-    const byAgent = claudeWrote(DIR);
+    const byAgent = claudeWrote(DIR), changes = new Map();   // who → their changes since the last check
     for (const [key, [t, id]] of Object.entries(texts)) {
       if (byAgent(key, t)) continue;
-      const [a, far] = by.get(id) || [HOME, false], who = shown(a) + (far ? ' via link' : '');
+      const [a, far] = by.get(id) || [HOME, false];
       const change = !(key in lastTexts) && t.trim() ? 'wrote' : key in lastTexts && lastTexts[key][0] !== t ? 'changed' : null;
       if (!change) continue;
-      fs.appendFileSync(EVENTS, change === 'wrote' ? `BOARD: ${oneLine(who)} wrote "${flat(t)}" (${oneLine(key)})\n` : `BOARD: ${oneLine(who)} changed ${oneLine(key)} to "${flat(t)}"\n`);
-      fs.appendFileSync(CANVAS, JSON.stringify({ id: nextId('b'), ts: now(), author: a, ...(far ? { via: 'link' } : {}), key, el: id, text: flat(t), change }) + '\n');
+      const g = far ? 'link' : `home:${a}`;   // everyone on the link together: a guest can post under any name
+      if (!changes.has(g)) changes.set(g, []);
+      changes.get(g).push({ a, far, key, id, t, change });
     }
     lastTexts = texts;
+    // Up to three changes from one person (or from the link) are three lines; more become one line with the count and the
+    // last change, so ten thousand edits through the link reach the agent as one message per check, not ten thousand.
+    for (const list of changes.values()) {
+      const one = ({ a, far, key, id, t, change }) => {
+        const who = shown(a) + (far ? ' via link' : '');
+        fs.appendFileSync(EVENTS, change === 'wrote' ? `BOARD: ${oneLine(who)} wrote "${flat(t)}" (${oneLine(key)})\n` : `BOARD: ${oneLine(who)} changed ${oneLine(key)} to "${flat(t)}"\n`);
+        fs.appendFileSync(CANVAS, JSON.stringify({ id: nextId('b'), ts: now(), author: a, ...(far ? { via: 'link' } : {}), key, el: id, text: flat(t), change }) + '\n');
+      };
+      if (list.length <= 3) { list.forEach(one); continue; }
+      const last = list.at(-1), names = [...new Set(list.map(x => shown(x.a)))], who = `${names.slice(0, 3).join(', ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''}${last.far ? ' via link' : ''}`;
+      fs.appendFileSync(EVENTS, `BOARD: ${oneLine(who)} changed ${list.length} texts, the last ${oneLine(last.key)} to "${flat(last.t)}"\n`);
+      fs.appendFileSync(CANVAS, JSON.stringify({ id: nextId('b'), ts: now(), author: last.a, ...(last.far ? { via: 'link' } : {}), key: last.key, el: last.id, text: flat(last.t), change: 'many', count: list.length, who }) + '\n');
+    }
   }
 
   // The door. This computer (Host: localhost) walks in. Anyone else arrives through `share`'s tunnel, so their Host is the
@@ -525,17 +587,22 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       }
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         const ids = issue(far);
-        if (!ids) return send(res, 429, 'Too many pages opened through this link in the last minute. Wait a minute, then reload.', 'text/plain; charset=utf-8', { 'retry-after': '60' });
+        if (!ids) return send(res, 429, 'Too many pages were opened on this board in the last minute. Wait a minute, then reload.', 'text/plain; charset=utf-8', { 'retry-after': '60' });
         return send(res, 200, page(far, ids), 'text/html; charset=utf-8', head);
       }
+      // Everything posted through the link shares one budget: 8 MB at once, refilled at 3 MB a second. A guest posting faster
+      // gets 429 and waits; this computer is never held up behind them.
+      // (A post bigger than the whole budget is left to the route, which refuses it as too big.)
+      const len = Number(req.headers['content-length']) || 0;
+      if (far && req.method === 'POST' && len <= 8e6 && !linkBudget(len)) return send(res, 429, { error: 'too much at once through the link: wait a moment' }, 'application/json', { 'retry-after': '2' });
       // A call that names a page id (c) is that page's own: its secret, and from the same side of the link it was served to.
-      const notMine = c => { if (pageOk(req, c, far)) return false; send(res, 403, { error: 'not this page\'s id, or the server restarted: reload the page' }); return true; };
+      const notMine = c => { if (pageOk(req, c, far)) return false; send(res, 403, { error: 'this page was signed out: the board server restarted or no longer knows it. Reload the page.' }); return true; };
       if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
       // Pictures people paste. An image element carries only a fileId; Excalidraw keeps the pixels in the page, so a
       // pasted screenshot would live in one tab's memory and be gone on reload. The page that has a picture sends it
       // here once; it is kept as a plain image file in the call's files/, and any page missing it (or the agent) reads it back.
       if (req.method === 'POST' && url.pathname === '/api/files') {
-        const { files: list, c, name } = await json(req, 30e6), took = [];
+        const { files: list, c, name } = await json(req, far ? 8e6 : 30e6), took = [];
         if (c != null && notMine(c)) return;
         let { n, bytes } = picsNow();
         for (const f of Array.isArray(list) ? list : []) {
@@ -579,9 +646,17 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         if (!['step', 'exit', 'done'].includes(t.action) || !(i >= 1 && i <= n)) return send(res, 400, { error: 'bad tour report' });
         const who = quiet(shown(authorOf(t.name, far)) + (far ? ' via link' : '')), title = quiet(tr.title || 'tour');
         const line = t.action === 'step' ? `TOUR: ${who} at step ${i}/${n} (${title})` : t.action === 'done' ? `TOUR: ${who} finished (${title})` : `TOUR: ${who} exited at step ${i}/${n} (${title})`;
+        // A page here: its last move, 1.2 s after its clicks stop. The link: one line at most every 1.2 s for all its pages
+        // together, the latest (a guest can hold many page ids).
+        if (far) {
+          const w = tourAt.get('link');
+          if (w) w.line = line;
+          else { const x = { line }; x.timer = setTimeout(safe('tour line', () => { tourAt.delete('link'); fs.appendFileSync(EVENTS, x.line + '\n'); }), 1200); tourAt.set('link', x); }
+          return send(res, 200, { ok: true });
+        }
         const k = t.c;
-        clearTimeout(tourAt.get(k));
-        tourAt.set(k, setTimeout(safe('tour line', () => { tourAt.delete(k); fs.appendFileSync(EVENTS, line + '\n'); }), 1200));
+        clearTimeout(tourAt.get(k)?.timer);
+        tourAt.set(k, { timer: setTimeout(safe('tour line', () => { tourAt.delete(k); fs.appendFileSync(EVENTS, line + '\n'); }), 1200) });
         return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && url.pathname === '/api/thread') return send(res, 200, { items: thread(DIR) });
@@ -600,18 +675,21 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/scene') return send(res, 200, { elements: [...els.values()] });
       if (req.method === 'POST' && url.pathname === '/api/scene') {
-        const scene = await json(req, 10e6);
+        // A page sends at most 10 MB and 2,000 elements at a time (the page splits a bigger change); a guest 2 MB.
+        const scene = await json(req, far ? 2e6 : 10e6);
         if (scene.probe) return send(res, 200, { ok: true, quiet: true });   // a test load (?probe) never changes the board
         // Every page names itself (c). The old whole-scene overwrite with no page id is gone: one request could wipe the board.
         if (!pageId(scene.c)) return send(res, 400, { error: 'no page id' });
         if (notMine(scene.c)) return;
-        const who = [authorOf(scene.name, far), far], took = [];
+        const list = Array.isArray(scene.elements) ? scene.elements : [];
+        if (list.length > 2000) return send(res, 413, { error: 'at most 2,000 elements at a time' });
+        const who = [authorOf(scene.name, far), far], took = [], room = roomFor();
         let bytes = 0;
-        for (const e of Array.isArray(scene.elements) ? scene.elements : []) {
+        for (const e of list) {
           if (!okElement(e, known) || !newer(e, els.get(e.id))) continue;
           const c = cleanElement(e), size = JSON.stringify(c).length;
-          if (size > ELEMENT_MAX(c) || !room(c.id, size)) continue;
-          put(c, size); by.set(c.id, who); took.push(c); bytes += size;
+          if (size > ELEMENT_MAX(c) || !room(c.id, size, far)) continue;
+          put(c, size, far); by.set(c.id, who); took.push(c); bytes += size;
         }
         if (took.length) { broadcast('elements', { elements: took }, scene.c, bytes); saveSoon(); diffSoon(); }
         return send(res, 200, { ok: true, took: took.length });

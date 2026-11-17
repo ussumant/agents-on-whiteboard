@@ -595,8 +595,16 @@ const live = (() => {
   // Elements from anywhere but this page, read the way Excalidraw reads a file, one at a time: a broken shape (from an
   // older server, or a scene.json edited by hand) is left out instead of blanking the board, and embeds never come in.
   const SHAPES = new Set(["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text", "image", "frame", "magicframe"]);
-  const pts = (p, min) => Array.isArray(p) && p.length >= min && p.length <= 10000 && p.every((q) => Array.isArray(q) && q.length === 2 && Number.isFinite(q[0]) && Number.isFinite(q[1]));
-  const shapeOk = (e) => !!e && typeof e === "object" && typeof e.id === "string" && SHAPES.has(e.type) && e.containerId !== e.id
+  // Sizes are bounded as on the server (src/server.mjs, shapeOk): an ellipse 1e15 wide froze every page that drew it.
+  const within = (n) => (v) => v == null || (Number.isFinite(v) && Math.abs(v) <= n), inRange = (lo, hi) => (v) => v == null || (Number.isFinite(v) && v >= lo && v <= hi);
+  const pts = (p, min) => Array.isArray(p) && p.length >= min && p.length <= 10000 && p.every((q) => Array.isArray(q) && q.length === 2 && Number.isFinite(q[0]) && Number.isFinite(q[1]) && Math.abs(q[0]) <= 1e5 && Math.abs(q[1]) <= 1e5);
+  const sized = (e) => within(1e6)(e.x) && within(1e6)(e.y) && within(1e5)(e.width) && within(1e5)(e.height) && inRange(0.5, 100)(e.strokeWidth) && inRange(0, 5)(e.roughness)
+    && inRange(1, 1000)(e.fontSize) && inRange(0.5, 5)(e.lineHeight) && within(1e4)(e.angle);
+  // A link is kept only as an absolute http(s) address with nothing hidden in it (no entities, control, space or
+  // zero-width characters), the same rule as the server's: Excalidraw opens a link that starts // in this tab.
+  const linkOk = (l) => typeof l === "string" && l.length <= 2000 && !/[\p{Cc}\p{Cf}\p{Z}\s]|&[#\w]+;/u.test(l)
+    && (() => { try { const u = new URL(l); return (u.protocol === "https:" || u.protocol === "http:") && l.toLowerCase().startsWith(`${u.protocol}//`); } catch (e) { return false; } })();
+  const shapeOk = (e) => !!e && typeof e === "object" && typeof e.id === "string" && SHAPES.has(e.type) && e.containerId !== e.id && sized(e)
     && (e.boundElements == null || (Array.isArray(e.boundElements) && e.boundElements.every((b) => b && typeof b.id === "string")))
     && (e.groupIds == null || (Array.isArray(e.groupIds) && e.groupIds.every((g) => typeof g === "string")))
     && (!["arrow", "line"].includes(e.type) || pts(e.points, 2))
@@ -605,7 +613,7 @@ const live = (() => {
     const out = [];
     for (const e of Array.isArray(list) ? list : []) {
       if (!shapeOk(e)) continue;
-      try { const [x] = ExcalidrawLib.restoreElements([e], null); if (x && shapeOk(x)) out.push(x); } catch (err) { /* left out */ }
+      try { const [x] = ExcalidrawLib.restoreElements([e], null); if (x && shapeOk(x)) out.push(x.link != null && !linkOk(x.link) ? { ...x, link: null } : x); } catch (err) { /* left out */ }
     }
     return out;
   }
@@ -634,13 +642,25 @@ const live = (() => {
   // Pictures: an image element carries only a fileId, and Excalidraw keeps the pixels in this page's files, so
   // a pasted screenshot never left the tab and was gone on reload. Send the server each picture it lacks, once; fetch
   // any picture an element needs that this page lacks.
-  const picsSent = new Set(), picsAsked = new Map();
+  // A picture that didn't reach the server is tried again after 4 s, then 8 s, then it stops and says so; one the server
+  // refused isn't sent again. (A page whose server had restarted re-sent a 2 MB picture every 2 s, for as long as it was open.)
+  const picsSent = new Set(), picsAsked = new Map(), picsTried = new Map();   // fileId → {n, at}
   function pushFiles() {
-    const have = api.getFiles(), out = [];
-    for (const e of api.getSceneElements()) if (e.type === "image" && have[e.fileId] && !picsSent.has(e.fileId)) { picsSent.add(e.fileId); out.push(have[e.fileId]); }
+    if (stale) return;
+    const have = api.getFiles(), out = [], now = Date.now();
+    for (const e of api.getSceneElements()) if (e.type === "image" && have[e.fileId] && !picsSent.has(e.fileId)) {
+      const t = picsTried.get(e.fileId); if (t && (t.n >= 3 || now < t.at)) continue;
+      picsSent.add(e.fileId); out.push(have[e.fileId]);
+    }
     if (!out.length) return;
     fetch("/api/files", { method: "POST", headers: WRITE, body: JSON.stringify({ files: out.map(({ id, mimeType, dataURL, created }) => ({ id, mimeType, dataURL, created })), c: cid, name: me }) })
-      .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); }).catch(() => { for (const f of out) picsSent.delete(f.id); });   // resent with the next change
+      .then((r) => {
+        if (r.status === 403) return signedOut();
+        if (r.status === 429 || r.status >= 500) throw new Error("HTTP " + r.status);
+        if (!r.ok) { for (const f of out) picsTried.set(f.id, { n: 3, at: 0 }); setStatus("a picture was too big for the board server, so it stays in this tab only"); }
+      })
+      .catch(() => { for (const f of out) { picsSent.delete(f.id); const t = picsTried.get(f.id) || { n: 0, at: 0 }; t.n++; t.at = Date.now() + 2000 * 2 ** t.n; picsTried.set(f.id, t);
+        if (t.n >= 3) setStatus("a picture couldn't be saved on the board server: reload the page"); } });
   }
   async function pullFiles(force) {
     if (!onServer || !api) return;
@@ -654,15 +674,32 @@ const live = (() => {
       if (files && files.length) { files.forEach((f) => picsSent.add(f.id)); api.addFiles(files); }
     } catch (e) { /* asked again when the server says it has new pictures */ }
   }
+  // Changes go out in parts of at most 1,000 elements (the server takes 2,000 at a time). A part that didn't get through is
+  // sent again after 2 s, 4 s and 8 s, then the page says so; a part the server refused for good isn't retried.
+  let pushFails = 0, pushRetry = null;
   function pushNow(leaving) {
     clearTimeout(pushTimer); pushTimer = null;
-    if (probe) return;   // a ?probe page never writes: the first poll's reset path called this directly and seeded an empty server
+    if (probe || stale) return;   // a ?probe page never writes: the first poll's reset path called this directly and seeded an empty server
     if (!leaving) pushFiles();
     const delta = api.getSceneElementsIncludingDeleted().filter((e) => sent.get(e.id) !== e.version);
     if (!delta.length) return;
     for (const e of delta) sent.set(e.id, e.version);
-    fetch("/api/scene", { method: "POST", keepalive: !!leaving, headers: WRITE, body: JSON.stringify({ elements: delta, c: cid, name: me }) })
-      .catch(() => { for (const e of delta) sent.delete(e.id); });   // resent with the next change
+    for (let i = 0; i < delta.length; i += 1000) {
+      const part = delta.slice(i, i + 1000);
+      fetch("/api/scene", { method: "POST", keepalive: !!leaving, headers: WRITE, body: JSON.stringify({ elements: part, c: cid, name: me }) })
+        .then((r) => {
+          if (r.status === 403) return signedOut();
+          if (r.status === 429 || r.status >= 500) throw new Error("HTTP " + r.status);
+          if (!r.ok) return setStatus("the board server refused a change: it stays in this tab only");
+          pushFails = 0;
+        })
+        .catch(() => {
+          for (const e of part) if (sent.get(e.id) === e.version) sent.delete(e.id);
+          if (stale || leaving || pushRetry) return;
+          if (++pushFails > 3) return setStatus("your changes aren't reaching the board server: reload the page");
+          pushRetry = setTimeout(() => { pushRetry = null; pushNow(); }, 1000 * 2 ** pushFails);
+        });
+    }
   }
   function drawPeers() {
     const collaborators = new Map();
@@ -672,8 +709,10 @@ const live = (() => {
   }
   // The room: long-poll /api/changes. It answers as soon as anything this page hasn't seen happens (or after 25 s), which
   // works through any tunnel; a Cloudflare quick tunnel never delivers server-sent events.
+  // Signed out: the server restarted (its keys are new) or no longer knows this page. Every write stops, and the page says so.
   let joined = false, stale = false;
-  const STALE = "the board server restarted: reload this page";
+  const STALE = "this page was signed out: the board server restarted. Reload the page.";
+  function signedOut() { stale = true; $("dot").className = "dot off"; $("conn").textContent = STALE; }
   const handle = { elements: (d) => merge(d.elements), join: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), name: d.name }),
     presence: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), ...d }), leave: (d) => peers.delete(d.id), thread: () => poll(), files: () => pullFiles(true) };
   async function listen() {
@@ -681,28 +720,30 @@ const live = (() => {
     let since = -1;
     // (a fetch that outlives the page, not a beacon: a beacon can't carry the key)
     window.addEventListener("pagehide", () => fetch("/api/leave", { method: "POST", keepalive: true, headers: WRITE, body: JSON.stringify({ c: cid }) }).catch(() => {}));
+    let fails = 0;
     for (;;) {
       try {
         const res = await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store", headers: KEY });
         // A server that restarted has new keys and doesn't know this page: say so, and ask again only now and then.
-        if (res.status === 403) { stale = true; $("dot").className = "dot off"; $("conn").textContent = STALE; await new Promise((ok) => setTimeout(ok, 15000)); continue; }
+        if (res.status === 403) { signedOut(); await new Promise((ok) => setTimeout(ok, 30000)); continue; }
         const r = await res.json();
         if (!res.ok) throw new Error(r.error || String(res.status));
         if (r.reset) { peers.clear(); merge((await (await fetch("/api/scene", { cache: "no-store" })).json()).elements); pushNow(); }   // the server restarted, or we fell behind
         since = r.seq;
         for (const ev of r.events || []) if (handle[ev.event]) handle[ev.event](ev.data);
         if ((r.events || []).some((ev) => ev.event !== "elements")) drawPeers();
-      } catch (e) { await new Promise((ok) => setTimeout(ok, 2000)); }
+        fails = 0;
+      } catch (e) { fails++; await new Promise((ok) => setTimeout(ok, Math.min(30000, 2000 * 2 ** (fails - 1)))); }   // the server is down: 2 s, 4 s, 8 s … 30 s
     }
   }
   let ptrTimer = null, ptrNext = null;
   function pointer({ pointer: p, button }) {
-    if (!joined || !p) return;
+    if (!joined || !p || stale) return;
     ptrNext = { pointer: { x: p.x, y: p.y, tool: p.tool }, button };
     if (ptrTimer) return;
     ptrTimer = setTimeout(() => {
       ptrTimer = null;
-      fetch("/api/presence", { method: "POST", headers: WRITE, body: JSON.stringify({ c: cid, ...ptrNext, selected: api.getAppState().selectedElementIds }) }).catch(() => {});
+      fetch("/api/presence", { method: "POST", headers: WRITE, body: JSON.stringify({ c: cid, ...ptrNext, selected: api.getAppState().selectedElementIds }) }).then((r) => { if (r.status === 403) signedOut(); }).catch(() => {});
     }, 60);
   }
   const labelOf = (id) => {
@@ -1170,9 +1211,9 @@ const live = (() => {
   // Where this page is, for the presenter: one quiet TOUR line in events.log (the server waits for the clicks to stop). Never
   // from a ?probe page, and only to a server that takes it: an older one would 404, and that 404 is a console error.
   function report(action) {
-    const t = T.cur; if (!t || probe || !onServer) return;
+    const t = T.cur; if (!t || probe || !onServer || stale) return;
     const body = JSON.stringify({ c: cid, name: me, tour_id: t.id, title: t.title, index: T.at, total: t.steps.length, action });
-    canReport.then((ok) => ok && fetch("/api/tour", { method: "POST", headers: WRITE, body }).catch(() => {}));
+    canReport.then((ok) => ok && fetch("/api/tour", { method: "POST", headers: WRITE, body }).then((r) => { if (r.status === 403) signedOut(); }).catch(() => {}));
   }
 
   /* the ops. During the first poll the record replays: a tour, a step or a gesture from before this page loaded only
@@ -1502,12 +1543,13 @@ const live = (() => {
     else if (op.op === "point") pointOp(op);
     else if (op.op === "answer") answerOp(op);   // a ✓ keep / ✎ change on a step
   }
-  let pollTimer = null, polling = false, pollAgain = false;
+  let pollTimer = null, polling = false, pollAgain = false, pollFails = 0;
   async function poll() {
     if (polling) { pollAgain = true; return; }
     polling = true; clearTimeout(pollTimer);
     try {
       const { items } = await (await fetch("/api/thread", { cache: "no-store" })).json();
+      pollFails = 0;
       if (stale) { $("dot").className = "dot off"; $("conn").textContent = STALE; } else { $("dot").className = "dot on"; $("conn").textContent = here(); }
       for (const it of items) {
         if (seen.has(it.id)) continue; seen.add(it.id);
@@ -1515,9 +1557,9 @@ const live = (() => {
         else if (it.kind === "op") { try { applyOp(it); } catch (e) { console.error("[live] op failed", e, it); } }
       }
       firstPoll = false;
-    } catch (e) { $("dot").className = "dot off"; $("conn").textContent = "reconnecting…"; }
+    } catch (e) { pollFails++; $("dot").className = "dot off"; $("conn").textContent = stale ? STALE : "reconnecting…"; }
     polling = false;
-    pollTimer = setTimeout(poll, pollAgain ? 0 : 1500); pollAgain = false;
+    pollTimer = setTimeout(poll, pollAgain ? 0 : Math.min(30000, 1500 * 2 ** pollFails)); pollAgain = false;   // the server is down: 3 s, 6 s, 12 s … 30 s
   }
   async function post(text, on) {
     const r = await fetch("/api/comment", { method: "POST", headers: WRITE, body: JSON.stringify({ text, on, name: me }) }), it = await r.json();

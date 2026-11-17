@@ -1,6 +1,7 @@
 {
   "name": "sketchcall",
   "version": "0.1.0",
+  "private": true,
   "description": "Comment on a whiteboard. Your coding agent answers on it.",
   "license": "MIT",
   "type": "module",

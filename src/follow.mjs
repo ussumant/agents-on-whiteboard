@@ -26,8 +26,10 @@ export function eventOf(source, it, board, me) {
   if (!it || typeof it !== 'object') return null;
   if (source === 'canvas') {
     const who = `${shown(it.author)}${it.via ? ' via link' : ''}`;
-    return pack(idOf(it.id), it.change === 'changed' ? `${who} changed ${it.key} to "${it.text}"` : `${who} wrote "${it.text}" (${it.key})`,
-      { kind: 'board', board, element_id: idOf(it.el), author: it.author || HOME, via: it.via, ts: it.ts });
+    // many changes from one person (or from the link) since the last check come as one, with the count and the last one
+    const say = it.change === 'many' ? `${it.who || who} changed ${it.count} texts on the board, the last ${it.key} to "${it.text}"`
+      : it.change === 'changed' ? `${who} changed ${it.key} to "${it.text}"` : `${who} wrote "${it.text}" (${it.key})`;
+    return pack(idOf(it.id), say, { kind: 'board', board, element_id: idOf(it.el), author: it.author || HOME, via: it.via, count: it.change === 'many' ? it.count : undefined, ts: it.ts });
   }
   const on = it.on && typeof it.on === 'object' ? it.on : it.on ? { id: it.on } : null;
   if (it.kind === 'op' && it.op === 'answer') {

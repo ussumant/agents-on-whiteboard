@@ -100,7 +100,7 @@ export function runMcp({ channels = false } = {}) {
       { text: s, on: s, reply_to: s, ...dirArg }, ['text'], a => {
         const d = dirOf(a), to = a.reply_to && thread(d).find(x => x.id === a.reply_to);
         if (a.reply_to && !to) throw new Error(`no comment ${a.reply_to} in the record`);
-        return say(d, a.text, a.on ?? to?.on ?? null, me(d));
+        return say(d, a.text, a.on ?? to?.on ?? null, me(d), to ? to.id : undefined);
       }],
     ['board_focus', 'Glide the person\'s camera to one element or several, and outline them in red.',
       { target: { anyOf: [s, { type: 'array', items: s }] }, ...dirArg }, ['target'], a => op(dirOf(a), { op: 'focus', target: a.target })],

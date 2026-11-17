@@ -149,7 +149,7 @@ try {
       if (!rest.length) fail(`usage: ${N} say "text" [--reply-to <comment id>] [--on <element id>]`);
       const d = board(), to = opts['reply-to'] && S.thread(d).find(x => x.id === opts['reply-to']);
       if (opts['reply-to'] && !to) fail(`no comment ${opts['reply-to']} in the record`);
-      print(S.say(d, rest.join(' '), opts.on ?? to?.on ?? null, opts.presenter)); break;
+      print(S.say(d, rest.join(' '), opts.on ?? to?.on ?? null, opts.presenter, to ? to.id : undefined)); break;
     }
     case 'op':
       if (!rest.length) fail(`usage: ${N} op '{"op":"note","ref":"n1","x":0,"y":0,"text":"..."}'`);
