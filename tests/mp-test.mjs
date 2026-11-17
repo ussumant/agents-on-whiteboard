@@ -2,10 +2,11 @@
 // sample board, on a spare port. It edits, deletes and posts comments, so it never runs on a real board.
 //   node tests/mp-test.mjs [spare port 4900–4940]      → 34 PASS lines
 import fs from "fs"; import puppeteer from "puppeteer";
-import { ok, sleep, cli, scratch, serveBoard, portArg, poll, until, joined } from "./lib.mjs";
+import { ok, sleep, cli, scratch, serveBoard, portArg, poll, until, joined, pageKey, asPage } from "./lib.mjs";
 const PORT = portArg(2, 4910), D = scratch("mp"), U = `http://localhost:${PORT}/`;
 const srv = await serveBoard(D, PORT);
-const b = await puppeteer.launch({ headless: true });
+// the same flags as the other gates: a page in a background tab keeps its timers (the picture upload runs on one)
+const b = await puppeteer.launch({ headless: true, args: ["--disable-background-timer-throttling", "--disable-renderer-backgrounding", "--disable-backgrounding-occluded-windows"] });
 const open = async (q, w = 1280) => { const p = await b.newPage(); await p.setViewport({ width: w, height: 800 }); const errs = []; p.on("pageerror", (e) => errs.push(e.message)); p.on("console", (m) => m.type() === "error" && errs.push(m.text()));
   await p.goto(U + q, { waitUntil: "networkidle2" }); await p.waitForFunction("window.__board && window.__board.ready === true", { timeout: 30000 }); p.errs = errs; return p; };
 const scene = (p) => p.evaluate(() => __excalidrawAPI.getSceneElementsIncludingDeleted().map((e) => ({ id: e.id, v: e.version, del: !!e.isDeleted, x: Math.round(e.x), text: e.text, c: e.containerId })));
@@ -108,17 +109,18 @@ ok(geo, "16b the arrow starts outside its box, not at the centre");
 // 17 pictures: a picture A pastes is saved on the server as a file, shows in B and in a page that joins later,
 // survives A's reload, and a comment on it names the saved file (before this, a pasted picture lived in one tab only)
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAACgAAAAeCAIAAADRv8uKAAAAKklEQVR4nO3NMQ0AAAgDsAmb/yALGXA06d9MeyJisVgsFovFYrFYLP4bL9HP3Ew1mJ9PAAAAAElFTkSuQmCC";
-await A.mouse.click(640, 400);
+// a person pastes into the page they are looking at
+await A.bringToFront(); await A.mouse.click(640, 400);
 await A.evaluate(async (b64) => { const bin = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), dt = new DataTransfer(); dt.items.add(new File([bin], "pic.png", { type: "image/png" }));
   document.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true })); }, PNG);
 // a pasted image exists before Excalidraw gives it a fileId (slower under load): wait for the id, then for the file
-await A.waitForFunction(() => __excalidrawAPI.getSceneElements().some((x) => x.type === "image" && x.fileId), { timeout: 10000, polling: 250 }).catch(() => {});
+await until(A, () => __excalidrawAPI.getSceneElements().some((x) => x.type === "image" && x.fileId));
 const pic = await A.evaluate(() => { const e = __excalidrawAPI.getSceneElements().find((x) => x.type === "image" && x.fileId); return e ? { id: e.id, fileId: e.fileId } : null; });
-for (let i = 0; i < 40 && pic && !(fs.existsSync(`${D}/live/files`) && fs.readdirSync(`${D}/live/files`).some((n) => n.startsWith(pic.fileId + "."))); i++) await sleep(250);
+await poll(() => pic && fs.readdirSync(`${D}/live/files`).some((n) => n.startsWith(pic.fileId + ".")));
 const hasPic = (p) => p.evaluate((f) => !!__excalidrawAPI.getFiles()[f], pic && pic.fileId);
 ok(!!pic && fs.existsSync(`${D}/live/files`) && fs.readdirSync(`${D}/live/files`).some((n) => n.startsWith(pic.fileId + ".")), `17 A's pasted picture is saved on the server (${pic && pic.fileId})`);
-// B learns of the picture from the server's "files" event after the upload lands: give it up to 8 s, polled
-let bHas = false; for (let i = 0; i < 32 && pic && !(bHas = await hasPic(B)); i++) await sleep(250);
+// B learns of the picture from the server's "files" event after the upload lands: polled, up to 15 s
+const bHas = (await poll(() => pic && hasPic(B))) >= 0;
 ok(!!pic && bHas, "17b B shows it");
 const Late = await open("?name=Late"); await poll(() => hasPic(Late));
 ok(!!pic && await hasPic(Late), "17c a page that joins later shows it");
@@ -126,7 +128,7 @@ await A.reload({ waitUntil: "load" });
 const back = await A.waitForFunction("window.__board && window.__board.ready === true", { timeout: 30000, polling: 500 }).then(() => true, async () => console.log("A after reload:", await A.evaluate(() => JSON.stringify(window.__board && { ready: window.__board.ready, error: window.__board.error }))));
 await poll(() => hasPic(A));
 ok(!!back && !!pic && await hasPic(A), "17d A still has it after a reload");
-await fetch(U + "api/comment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "about the picture", on: pic && { id: pic.id, label: "area: image" } }) }); await sleep(300);
+await fetch(U + "api/comment", { method: "POST", headers: asPage(await pageKey(U), U.slice(0, -1)), body: JSON.stringify({ text: "about the picture", on: pic && { id: pic.id, label: "area: image" } }) }); await sleep(300);
 ok(/\[pictures: live\/files\/\w+\.png\]/.test(fs.readFileSync(`${D}/live/events.log`, "utf8").trim().split("\n").filter((l) => l.startsWith("COMMENT")).at(-1) || ""), "17e a comment on it names the saved file");
 await b.close(); srv.kill();
 console.log(`(board copy: ${D})`);

@@ -20,6 +20,42 @@ import { fileURLToPath } from 'node:url';
 export const DEFAULT_PORT = 4900;
 const PAGE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'board.html');
 
+// Text a person sent, kept on one line wherever it goes into a line of its own (events.log, a channel message): no control
+// characters, no line or paragraph separators, no bidi overrides. Each could start a forged line, or flip how a line reads.
+// Joiners stay: the sample's 👩‍🍳 is three characters held together by one.
+export const BREAKS = /[\p{Cc}\u2028\u2029\u202a-\u202e\u2066-\u2069]+/gu;
+export const oneLine = s => String(s ?? '').replace(BREAKS, ' ').replace(/\s+/g, ' ').trim();
+// An element id as Excalidraw makes them (and as ops name them, like api__title): letters, digits, _ - . and :, nothing a
+// line, an attribute or a channel tag could be broken with.
+export const ID = /^[\w.:-]{1,128}$/;
+// Where a comment sits, as a page sends it: {id, ids, label, rect, tour, step}. Ids must be ids (`known` also lets through
+// an odd id the board itself already has), at most 50 of them; the label is one line of at most 80 characters.
+export function cleanOn(on, known = id => ID.test(id)) {
+  if (on == null) return null;
+  const no = m => { throw Object.assign(new Error(m), { status: 400 }); };
+  if (typeof on !== 'object' || Array.isArray(on)) no('on must be {id, ids, label, rect}');
+  const isId = x => typeof x === 'string' && known(x), out = {};
+  if (on.id != null) { if (!isId(on.id)) no('on.id is not an element id on this board'); out.id = on.id; }
+  if (on.ids != null) { if (!Array.isArray(on.ids) || on.ids.length > 50 || !on.ids.every(isId)) no('on.ids: at most 50 element ids'); out.ids = on.ids; }
+  if (on.label != null) out.label = oneLine(on.label).slice(0, 80);
+  if (on.rect != null) { const q = on.rect; if (!q || !['x', 'y', 'w', 'h'].every(k => Number.isFinite(q[k]))) no('on.rect needs numbers x, y, w and h'); out.rect = { x: q.x, y: q.y, w: q.w, h: q.h }; }
+  if (on.tour != null) { if (typeof on.tour !== 'string' || !ID.test(on.tour)) no('on.tour is not a tour id'); out.tour = on.tour; }
+  if (on.step != null) { if (!Number.isInteger(on.step) || on.step < 1 || on.step > 1000) no('on.step is a step number'); out.step = on.step; }
+  return Object.keys(out).length ? out : null;
+}
+// What a page may put on the board. Anything else in a POST is dropped, never saved or passed on: a text element whose
+// text was a number crashed the server on every restart, and a version of 1e308 locked an element for good.
+const finite = v => v === undefined || Number.isFinite(v);
+export const okElement = (e, known = id => ID.test(id)) => !!e && typeof e === 'object' && !Array.isArray(e) && typeof e.id === 'string' && known(e.id)
+  && typeof e.type === 'string' && e.type.length <= 32 && Number.isInteger(e.version) && e.version >= 0 && e.version < 1e9 && Number.isSafeInteger(e.versionNonce)
+  && ['text', 'originalText'].every(k => e[k] === undefined || (typeof e[k] === 'string' && e[k].length <= 10000))
+  && ['x', 'y', 'width', 'height', 'angle'].every(k => finite(e[k])) && (e.isDeleted === undefined || typeof e.isDeleted === 'boolean')
+  && (e.containerId == null || (typeof e.containerId === 'string' && known(e.containerId))) && (e.fileId == null || (typeof e.fileId === 'string' && /^[\w-]{1,128}$/.test(e.fileId)));
+// A board file or scene.json as it starts the server: a person's own file may have odd ids or no versionNonce, so only
+// what can crash the server or lock an element is left out.
+const loadable = e => !!e && typeof e === 'object' && typeof e.id === 'string' && e.id.length > 0 && e.id.length <= 128 && !/\p{Cc}/u.test(e.id)
+  && ['text', 'originalText'].every(k => e[k] === undefined || typeof e[k] === 'string') && (e.version === undefined || (Number.isFinite(e.version) && e.version < 1e9));
+
 // The record helpers, shared with mcp.mjs so both write exactly the same lines. `dir` is the board folder.
 export const files = dir => ({ live: path.join(dir, 'live'), thread: path.join(dir, 'live', 'thread.jsonl'),
   events: path.join(dir, 'live', 'events.log'), scene: path.join(dir, 'live', 'scene.json'), share: path.join(dir, 'live', 'share.json') });
@@ -37,7 +73,7 @@ export const samePresenter = (a, b) => presenterName(a).toLowerCase() === presen
 function withPresenter(o, by) { const p = presenterName(by); return p === 'Claude' ? o : { ...o, presenter: p }; }
 // Text the agent put on the board through ops: a note's or arrow's label (keyed by its container) and each edit's text.
 // When a page saves the scene back, that text must not read as a person's writing.
-export const flat = t => t.replace(/\s+/g, ' ').slice(0, 200);
+export const flat = t => String(t ?? '').replace(BREAKS, ' ').replace(/\s+/g, ' ').slice(0, 200);
 export function claudeWrote(dir) {
   const mine = new Set(), edits = {};
   for (const i of thread(dir)) if (i.kind === 'op') {
@@ -49,7 +85,11 @@ export function claudeWrote(dir) {
 export const op = (dir, o) => append(dir, { ...o, kind: 'op', id: nextId('op'), ts: now() });   // element ids go in op.ref (note/arrow) or op.target
 // Who wrote it: a name a person typed into the page. "claude" is reserved for the CLI and the MCP tools, so a page can
 // never post as the agent.
-export const nameOf = n => { const s = String(n || '').replace(/[<>"`\n\r\t]/g, '').trim().slice(0, 24); return s && s.toLowerCase() !== 'claude' ? s : null; };
+// A name is folded to its plain letters first (full-width letters, accents, zero-width marks and Cyrillic or Greek
+// look-alikes), so "Claude" with a zero-width space or a Cyrillic С can't pass either.
+const LOOKALIKE = { а: 'a', е: 'e', о: 'o', с: 'c', у: 'y', х: 'x', р: 'p', і: 'i', ӏ: 'l', ԁ: 'd', һ: 'h', н: 'h', ѕ: 's', т: 't', к: 'k', м: 'm', α: 'a', ο: 'o', υ: 'u', ε: 'e', ι: 'i', κ: 'k', ν: 'v', τ: 't', ℓ: 'l' };
+export const skeleton = s => String(s).normalize('NFKD').replace(/[\p{M}\p{Cf}]/gu, '').toLowerCase().replace(/./gu, c => LOOKALIKE[c] || c).replace(/[^a-z]/g, '');
+export const nameOf = n => { const s = String(n || '').normalize('NFKC').replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}<>"`]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 24); return s && skeleton(s) !== 'claude' ? s : null; };
 // The person at this computer: a page with no name of its own. Recorded as "you"; everyone else (other pages, the agent's
 // events) sees them as "Host". Their own page says "You".
 export const HOME = 'you';
@@ -57,7 +97,7 @@ export const shown = a => !a || a === HOME ? 'Host' : a.replace(/(^|\s)\S/g, c =
 // The author a request writes as. From this computer a nameless page is the host; through the share link it is a guest,
 // and anyone there calling themselves You or Host is "you (link)" or "host (link)", so the link can't pass as the host.
 const RESERVED = new Set([HOME, 'host']);
-export const authorOf = (name, far) => { const a = (nameOf(name) || (far ? 'guest' : HOME)).toLowerCase(); return far && RESERVED.has(a) ? `${a} (link)` : a; };
+export const authorOf = (name, far) => { const a = (nameOf(name) || (far ? 'guest' : HOME)).toLowerCase(); return far && (RESERVED.has(a) || RESERVED.has(skeleton(a))) ? `${a} (link)` : a; };
 // Excalidraw's own rule for two copies of one element: the higher version wins, and a tie goes to the lower versionNonce.
 export const newer = (a, b) => !b || a.version > b.version || (a.version === b.version && a.versionNonce < b.versionNonce);
 const MP = 2;   // what /api/hello reports: `share` refuses to open a tunnel to a server without keys
@@ -122,7 +162,7 @@ export function answer(dir, a, author, via) {
   const i = Number(a.step), n = (t.steps || []).length, s = Number.isInteger(i) && i >= 1 ? t.steps[i - 1] : null;
   if (!s || !s.ask) throw new Error(`step ${a.step} doesn't ask anything`);
   if (!['keep', 'change'].includes(a.pick)) throw new Error('pick is keep or change');
-  const text = String(a.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 400);
+  const text = oneLine(a.text).slice(0, 400);
   if (a.pick === 'change' && !text) throw new Error('say what to change');
   const tg = s.target, ids = typeof tg === 'string' ? [tg] : Array.isArray(tg) ? tg : [];
   const label = `step ${i}/${n} · ${String(s.title || s.text || '').replace(/\s+/g, ' ')}`.slice(0, 80);
@@ -132,11 +172,11 @@ export function answer(dir, a, author, via) {
 }
 // The events.log line for an answer. It starts with COMMENT on purpose: a watcher that greps events.log for COMMENT wakes
 // on it, as it does on a comment.
-export const answerLine = (it, far) => `COMMENT by ${shown(it.author)}${far ? ' via link' : ''} [answer to ${it.on.label}]: ${it.pick === 'keep' ? `✓ keep${it.text ? ` · ${it.text}` : ''}` : `✎ change → ${it.text}`}\n`;
+export const answerLine = (it, far) => `COMMENT by ${oneLine(shown(it.author))}${far ? ' via link' : ''} [answer to ${oneLine(it.on.label)}]: ${it.pick === 'keep' ? `✓ keep${it.text ? ` · ${oneLine(it.text)}` : ''}` : `✎ change → ${oneLine(it.text)}`}\n`;
 // Where people are in the tour: the last TOUR line in events.log (the page reports it; see /api/tour below).
 export const tourWhere = dir => { try { return fs.readFileSync(files(dir).events, 'utf8').split('\n').filter(l => l.startsWith('TOUR: ')).at(-1) || null; } catch { return null; } };
 // A TOUR line must never wake a watcher, which matches COMMENT, BOARD or EDIT anywhere in a line.
-export const quiet = s => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, 80).replace(/COMMENT|BOARD|EDIT/g, w => w[0] + w.slice(1).toLowerCase());
+export const quiet = s => oneLine(s).slice(0, 80).replace(/COMMENT|BOARD|EDIT/g, w => w[0] + w.slice(1).toLowerCase());
 
 // The board's starting point: the .excalidraw file given, else the only one in the folder.
 export function seedFile(dir, seed) {
@@ -155,7 +195,8 @@ export const isBoard = dir => fs.existsSync(files(dir).live) || fs.readdirSync(d
 
 // Pictures from an .excalidraw file's `files` (a board's Export carries the tab's pictures) into live/files: each one an
 // element on the board uses and the server lacks.
-const PIC_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+// No SVG: it can carry script, which runs if someone opens the file itself.
+const PIC_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
 function savePictures(dir, list, used) {
   const pics = path.join(files(dir).live, 'files'), saved = fs.existsSync(pics) ? fs.readdirSync(pics).map(f => f.replace(/\.\w+$/, '')) : [];
   const took = [];
@@ -198,17 +239,23 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const { live: LIVE, thread: THREAD, events: EVENTS, scene: SCENE, share: SHARE } = files(DIR);
   fs.mkdirSync(LIVE, { recursive: true });
   // Pasted pictures, one image file per Excalidraw fileId (see /api/files).
-  const PICS = path.join(LIVE, 'files'), PIC_EXT = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp', 'svg+xml': 'svg' };
+  // No SVG (it can carry script); at most 200 pictures and 200 MB per board, 5 MB each.
+  const PICS = path.join(LIVE, 'files'), PIC_EXT = { png: 'png', jpeg: 'jpg', gif: 'gif', webp: 'webp' }, PIC_MAX = 5e6, PICS_MAX = 200, PICS_BYTES = 200e6;
+  const picsNow = () => { try { const l = fs.readdirSync(PICS); return { n: l.length, bytes: l.reduce((t, f) => t + fs.statSync(path.join(PICS, f)).size, 0) }; } catch { return { n: 0, bytes: 0 }; } };
   const picOf = id => { if (!/^[\w-]{1,128}$/.test(id || '')) return null; for (const x of Object.values(PIC_EXT)) { const p = path.join(PICS, `${id}.${x}`); if (fs.existsSync(p)) return p; } return null; };
   // The scene everyone shares, including deleted elements (a delete is a newer version of the element, not its absence).
   const els = new Map(), by = new Map();   // id → element; id → [author, came through the link] of whoever last changed it
   let start = null;
   try { start = seedFile(DIR, seed); } catch (e) { if (!fs.existsSync(SCENE)) throw e; }   // a call already under way doesn't need its seed
-  if (fs.existsSync(SCENE)) for (const e of JSON.parse(fs.readFileSync(SCENE, 'utf8')).elements || []) { if (e && e.id) els.set(e.id, e); }
-  else if (start) {
+  if (fs.existsSync(SCENE)) {
+    // An element that could crash the server or lock itself (saved before these checks) is left behind, with a note.
+    const all = JSON.parse(fs.readFileSync(SCENE, 'utf8')).elements || [], keep = all.filter(loadable);
+    keep.forEach(e => els.set(e.id, e));
+    if (keep.length < all.length) { console.error(`left out ${all.length - keep.length} broken element(s) from ${SCENE}`); fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] })); }
+  } else if (start) {
     // A new call starts from the .excalidraw file as it is, its pictures included.
     const b = readBoard(start);
-    for (const e of b.elements) if (e && e.id) els.set(e.id, e);
+    for (const e of b.elements) if (loadable(e)) els.set(e.id, e);
     savePictures(DIR, b.files, new Set(b.elements.filter(e => e && e.type === 'image' && !e.isDeleted).map(e => e.fileId)));
     fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] }));
   }
@@ -216,13 +263,36 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   // copy). JSON with < escaped, so a file name can't close the script.
   const BOARD = { key: crypto.createHash('sha1').update(fs.realpathSync(DIR)).digest('hex').slice(0, 12),
     name: start ? path.basename(start, '.excalidraw') : path.basename(DIR) };
-  const page = () => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify(BOARD).replace(/</g, '\\u003c'));
+  // The write keys, new each run. A page gets one in its HTML, and sends it with every write; another website can't read
+  // the page (no CORS), so it can't send it. A page that came through the share link gets a different key from a page on
+  // this computer, so one can't stand in for the other.
+  const KEYS = { home: crypto.randomBytes(18).toString('base64url'), link: crypto.randomBytes(18).toString('base64url') };
+  const page = far => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home }).replace(/</g, '\\u003c'));
+  // Element ids a page may send: id-shaped ones, or an odd one the board's own file already has.
+  const known = id => ID.test(id) || els.has(id);
   // A label bound to a box or arrow can get a fresh random id when a browser rebuilds it, so key it by its container:
   // otherwise every new tab reported the arrow labels as text someone "wrote".
   const textsOf = list => Object.fromEntries(list.filter(e => e.type === 'text' && !e.isDeleted).map(e => [e.containerId ? `label:${e.containerId}` : e.id, [e.text, e.id]]));
   let lastTexts = els.size ? textsOf([...els.values()]) : null;
-  const body = req => new Promise((r, x) => { let b = ''; req.on('data', c => { b += c; if (b.length > 20e6) { x(new Error('too big')); req.destroy(); } }); req.on('end', () => r(b)); });
-  const send = (res, code, data, type = 'application/json', head = {}) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-board-live': MP, ...head }); res.end(typeof data === 'string' ? data : JSON.stringify(data)); };
+  // A request body, at most `cap` bytes (1 MB; a scene 10 MB; pictures 30 MB). Past the cap the rest is read and thrown
+  // away, and the request gets 413. A body must be one JSON object.
+  const fail = (status, m) => Object.assign(new Error(m), { status });
+  const body = (req, cap = 1e6) => new Promise((r, x) => {
+    let b = '', n = 0;
+    const take = c => { n += c.length; if (n > cap) { req.off('data', take); req.resume(); x(fail(413, `too big: at most ${cap / 1e6} MB`)); } else b += c; };
+    req.on('data', take); req.on('end', () => r(b)); req.on('error', x);
+  });
+  const json = async (req, cap) => { let o; try { o = JSON.parse(await body(req, cap) || 'null'); } catch (e) { throw e.status ? e : fail(400, 'not JSON'); }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) throw fail(400, 'send one JSON object'); return o; };
+  // Every answer: never inside another website's frame (clickjacking), no referrer (the first request carries ?k=).
+  const send = (res, code, data, type = 'application/json', head = {}) => { res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', 'x-board-live': MP,
+    'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', ...head });
+    res.end(typeof data === 'string' ? data : JSON.stringify(data)); };
+  // A timer's work never takes the server down: one bad element used to, 2.5 s after it arrived.
+  const safe = (what, fn) => (...a) => { try { return fn(...a); } catch (e) { console.error(`ERROR in ${what}: ${e.message}`); } };
+  const pageId = c => typeof c === 'string' && /^[\w-]{1,64}$/.test(c);
+  // The record stops taking comments and answers from pages at 10 MB (the agent's own lines still go in).
+  const recordFull = () => { try { return fs.statSync(THREAD).size >= 10e6; } catch { return false; } };
 
   // Who is in the room and what changed. Every page long-polls /api/changes: the poll returns at once when something it
   // hasn't seen is waiting, else it waits up to 25 s. (A Cloudflare quick tunnel delivers the headers of server-sent
@@ -233,22 +303,22 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const pending = (c, since) => log.filter(e => e.seq > since && e.from !== c).map(({ event, data }) => ({ event, data }));
   const roster = c => [...clients].filter(([id]) => id !== c).map(([id, v]) => ({ event: 'join', data: { id, name: v.name } }));
   // Answer the waiting polls 30 ms after a change, so a burst (a drag, a cursor sweep) goes out as one reply.
-  const wake = () => { if (!flushTimer) flushTimer = setTimeout(() => { flushTimer = null; for (const w of [...waiting]) { const evs = pending(w.c, w.since); if (evs.length) w.reply(evs); } }, 30); };
+  const wake = () => { if (!flushTimer) flushTimer = setTimeout(safe('wake', () => { flushTimer = null; for (const w of [...waiting]) { const evs = pending(w.c, w.since); if (evs.length) w.reply(evs); } }), 30); };
   const broadcast = (event, data, from) => { log.push({ seq: ++seq, from, event, data }); if (log.length > 3000) log.splice(0, log.length - 3000); wake(); };
   const touch = (c, name) => { const had = clients.has(c); clients.set(c, { name, seen: Date.now() }); if (!had) broadcast('join', { id: c, name }, c); };
   const leave = c => { if (clients.delete(c)) broadcast('leave', { id: c }, c); };
-  setInterval(() => { for (const [c, v] of clients) if (Date.now() - v.seen > 40000) leave(c); }, 10000).unref();   // closed without saying so
+  setInterval(safe('room', () => { for (const [c, v] of clients) if (Date.now() - v.seen > 40000) leave(c); }), 10000).unref();   // closed without saying so
   // An op the CLI or the MCP tools append to thread.jsonl nudges the room, so pages fetch it now, not on their next
   // 1.5 s poll: a tour step or a pointer move lands on every page together.
-  fs.watchFile(THREAD, { interval: 150 }, (cur, prev) => { if (cur.size !== prev.size) broadcast('thread', {}, null); });
+  fs.watchFile(THREAD, { interval: 150 }, safe('thread watch', (cur, prev) => { if (cur.size !== prev.size) broadcast('thread', {}, null); }));
   // Where people are in a guided tour: one quiet line per page in events.log, 1.2 s after their last click. Never in the
   // thread, and quiet() keeps COMMENT, BOARD and EDIT out of it, so a watcher doesn't wake on a step change.
   const tourAt = new Map();
 
   let saveTimer = null, diffTimer = null;
-  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] })), 300); };
+  const saveSoon = () => { clearTimeout(saveTimer); saveTimer = setTimeout(safe('save', () => fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] }))), 300); };
   // Text people write reaches events.log once they pause (2.5 s), so a word typed live is one line, not one per key.
-  const diffSoon = () => { clearTimeout(diffTimer); diffTimer = setTimeout(diffTexts, 2500); };
+  const diffSoon = () => { clearTimeout(diffTimer); diffTimer = setTimeout(safe('text check', diffTexts), 2500); };
   function diffTexts() {
     const texts = textsOf([...els.values()]);
     // A fresh copy of the board (the first seed of an empty server) is nobody writing: stay quiet.
@@ -258,8 +328,8 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
     for (const [key, [t, id]] of Object.entries(texts)) {
       if (byAgent(key, t)) continue;
       const [a, far] = by.get(id) || [HOME, false], who = shown(a) + (far ? ' via link' : '');
-      if (!(key in lastTexts) && t.trim()) fs.appendFileSync(EVENTS, `BOARD: ${who} wrote "${flat(t)}" (${key})\n`);
-      else if (key in lastTexts && lastTexts[key][0] !== t) fs.appendFileSync(EVENTS, `BOARD: ${who} changed ${key} to "${flat(t)}"\n`);
+      if (!(key in lastTexts) && t.trim()) fs.appendFileSync(EVENTS, `BOARD: ${oneLine(who)} wrote "${flat(t)}" (${oneLine(key)})\n`);
+      else if (key in lastTexts && lastTexts[key][0] !== t) fs.appendFileSync(EVENTS, `BOARD: ${oneLine(who)} changed ${oneLine(key)} to "${flat(t)}"\n`);
     }
     lastTexts = texts;
   }
@@ -271,6 +341,14 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const remote = req => !LOCAL.test(req.headers.host || '') || !!req.headers['cf-connecting-ip'] || !!req.headers['x-forwarded-for'];
   const openShare = () => { try { const s = JSON.parse(fs.readFileSync(SHARE, 'utf8')); process.kill(s.pid, 0); return s; } catch { return null; } };
   const same = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
+  // A write's Origin, when a browser sends one, is the board's own: the Host it asked for, or (through the link) the
+  // tunnel's address in share.json, in case the tunnel hands the server its own Host. "null" (a sandboxed frame, a file)
+  // is never the board. No Origin at all is a script on this computer, and it still needs the key.
+  const ownOrigin = (req, far) => {
+    const o = req.headers.origin; if (o === undefined) return true;
+    try { const u = new URL(o); if (!['http:', 'https:'].includes(u.protocol)) return false; if (u.host === req.headers.host) return true;
+      const s = far && openShare(); return !!(s && s.url && new URL(s.url).host === u.host); } catch { return false; }
+  };
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -281,22 +359,32 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         if (!s || !k || !same(k, s.key)) return send(res, 403, 'This board link is closed, or it is missing its key. Ask for a fresh link.', 'text/plain; charset=utf-8');
         if (url.searchParams.get('k')) head = { 'set-cookie': `bk=${k}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=86400` };
       }
+      // Every write, and the room's long poll (it puts a name in the room), needs the board's own page: its Origin, its key,
+      // and JSON. A website can send a simple text/plain POST to 127.0.0.1 without asking first; this is what stops it.
+      if (req.method !== 'GET' || url.pathname === '/api/changes') {
+        if (!ownOrigin(req, far)) return send(res, 403, { error: 'not from this board\'s page' });
+        if (!same(req.headers['x-sketchcall-key'] || '', far ? KEYS.link : KEYS.home)) return send(res, 403, { error: 'no board key, or an old one: reload the page' });
+        if (req.method !== 'GET' && !/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'send JSON (content-type: application/json)' });
+      }
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html'))
-        return send(res, 200, page(), 'text/html; charset=utf-8', head);
+        return send(res, 200, page(far), 'text/html; charset=utf-8', head);
       if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
       // Pictures people paste. An image element carries only a fileId; Excalidraw keeps the pixels in the page, so a
       // pasted screenshot would live in one tab's memory and be gone on reload. The page that has a picture sends it
       // here once; it is kept as a plain image file in live/files, and any page missing it (or the agent) reads it back.
       if (req.method === 'POST' && url.pathname === '/api/files') {
-        const { files: list, c, name } = JSON.parse(await body(req)), took = [];
-        for (const f of list || []) {
-          const m = f && /^[\w-]{1,128}$/.test(f.id || '') && String(f.dataURL || '').match(/^data:image\/(png|jpeg|gif|webp|svg\+xml);base64,([A-Za-z0-9+/=]+)$/);
+        const { files: list, c, name } = await json(req, 30e6), took = [];
+        let { n, bytes } = picsNow();
+        for (const f of Array.isArray(list) ? list : []) {
+          const m = f && typeof f.id === 'string' && /^[\w-]{1,128}$/.test(f.id) && typeof f.dataURL === 'string' && f.dataURL.match(/^data:image\/(png|jpeg|gif|webp);base64,([A-Za-z0-9+/=]+)$/);
           if (!m || picOf(f.id)) continue;
+          const pic = Buffer.from(m[2], 'base64');
+          if (pic.length > PIC_MAX || n >= PICS_MAX || bytes + pic.length > PICS_BYTES) continue;
           fs.mkdirSync(PICS, { recursive: true });
-          fs.writeFileSync(path.join(PICS, `${f.id}.${PIC_EXT[m[1]]}`), Buffer.from(m[2], 'base64'));
-          took.push(f.id);
+          fs.writeFileSync(path.join(PICS, `${f.id}.${PIC_EXT[m[1]]}`), pic);
+          n++; bytes += pic.length; took.push(f.id);
         }
-        if (took.length) { broadcast('files', { ids: took }, c); fs.appendFileSync(EVENTS, `IMAGE: ${quiet(shown(authorOf(name, far)))} added ${took.map(id => `live/files/${path.basename(picOf(id))}`).join(', ')}\n`); }
+        if (took.length) { broadcast('files', { ids: took }, pageId(c) ? c : null); fs.appendFileSync(EVENTS, `IMAGE: ${quiet(shown(authorOf(name, far)))} added ${took.map(id => `live/files/${path.basename(picOf(id))}`).join(', ')}\n`); }
         return send(res, 200, { ok: true, took });
       }
       if (req.method === 'GET' && url.pathname === '/api/files') {
@@ -307,52 +395,56 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         return send(res, 200, { files: out });
       }
       // `answer`: pages show ✓ keep / ✎ change only to a server that takes them (an older one would 404).
-      if (req.method === 'GET' && url.pathname === '/api/hello') return send(res, 200, { mp: MP, tour: 1, answer: 1, dir: DIR, here: [...clients.values()].map(c => c.name), sharing: !!openShare() });
+      // The folder's path (it names this computer's user) only to this computer: `share` reads it from here.
+      if (req.method === 'GET' && url.pathname === '/api/hello') return send(res, 200, { mp: MP, tour: 1, answer: 1, ...(far ? {} : { dir: DIR }), here: [...clients.values()].map(c => c.name), sharing: !!openShare() });
       if (req.method === 'POST' && url.pathname === '/api/answer') {
-        const a = JSON.parse(await body(req));
+        const a = await json(req);
         if (a.probe) return send(res, 200, { ok: true, quiet: true });
+        if (recordFull()) return send(res, 413, { error: 'the record is full (10 MB): start a new call' });
         let item; try { item = answer(DIR, a, authorOf(a.name, far), far ? 'link' : null); } catch (e) { return send(res, 400, { error: e.message }); }
         fs.appendFileSync(EVENTS, answerLine(item, far));
         return send(res, 200, item);
       }
       if (req.method === 'POST' && url.pathname === '/api/tour') {
-        const t = JSON.parse(await body(req)), i = Math.round(+t.index), n = Math.round(+t.total);
+        const t = await json(req), i = Math.round(+t.index), n = Math.round(+t.total);
         if (t.probe) return send(res, 200, { ok: true, quiet: true });
         if (!['step', 'exit', 'done'].includes(t.action) || !(i >= 1 && n >= i && n < 1000)) return send(res, 400, { error: 'bad tour report' });
         const who = quiet(shown(authorOf(t.name, far)) + (far ? ' via link' : '')), title = quiet(t.title || 'tour');
         const line = t.action === 'step' ? `TOUR: ${who} at step ${i}/${n} (${title})` : t.action === 'done' ? `TOUR: ${who} finished (${title})` : `TOUR: ${who} exited at step ${i}/${n} (${title})`;
         const k = String(t.c || who);
         clearTimeout(tourAt.get(k));
-        tourAt.set(k, setTimeout(() => { tourAt.delete(k); fs.appendFileSync(EVENTS, line + '\n'); }, 1200));
+        tourAt.set(k, setTimeout(safe('tour line', () => { tourAt.delete(k); fs.appendFileSync(EVENTS, line + '\n'); }), 1200));
         return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && url.pathname === '/api/thread') return send(res, 200, { items: thread(DIR) });
       if (req.method === 'POST' && url.pathname === '/api/comment') {
-        const { text, on, name } = JSON.parse(await body(req));
-        if (!text || !text.trim()) return send(res, 400, { error: 'empty' });
-        const author = authorOf(name, far);
-        const item = append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on: on || null, ...(far ? { via: 'link' } : {}) });
+        const { text, on: sent, name } = await json(req);
+        if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'empty' });
+        if (text.length > 4000) return send(res, 400, { error: 'a comment is at most 4,000 characters' });
+        if (recordFull()) return send(res, 413, { error: 'the record is full (10 MB): start a new call' });
+        const on = cleanOn(sent, known), author = authorOf(name, far);
+        const item = append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(far ? { via: 'link' } : {}) });
         // A comment on a pasted picture names its saved file, so the agent can open the picture it is about.
         const pics = [...new Set([on && on.id, ...((on && on.ids) || [])])].map(id => els.get(id)).filter(e => e && e.type === 'image' && !e.isDeleted).map(e => picOf(e.fileId)).filter(Boolean);
-        fs.appendFileSync(EVENTS, `COMMENT by ${shown(author)}${far ? ' via link' : ''}${on ? ` [on: ${on.label || on.id}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => 'live/files/' + path.basename(p)).join(', ')}]` : ''}: ${item.text.replace(/\s+/g, ' ')}\n`);
+        fs.appendFileSync(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => 'live/files/' + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
         return send(res, 200, item);
       }
       if (req.method === 'GET' && url.pathname === '/api/scene') return send(res, 200, { elements: [...els.values()] });
       if (req.method === 'POST' && url.pathname === '/api/scene') {
-        const scene = JSON.parse(await body(req));
+        const scene = await json(req, 10e6);
         if (scene.probe) return send(res, 200, { ok: true, quiet: true });   // a test load (?probe) never changes the board
+        // Every page names itself (c). The old whole-scene overwrite with no page id is gone: one request could wipe the board.
+        if (!pageId(scene.c)) return send(res, 400, { error: 'no page id' });
         const who = [authorOf(scene.name, far), far], took = [];
-        for (const e of scene.elements || []) if (e && e.id && newer(e, els.get(e.id))) took.push(e);
-        // A page that sends its whole scene with no page id (an old copy of the page) keeps last-writer-wins.
-        if (!scene.c) els.clear(), (scene.elements || []).forEach(e => e && e.id && els.set(e.id, e));
-        else took.forEach(e => els.set(e.id, e));
+        for (const e of Array.isArray(scene.elements) ? scene.elements : []) if (okElement(e, known) && newer(e, els.get(e.id))) took.push(e);
+        took.forEach(e => els.set(e.id, e));
         took.forEach(e => by.set(e.id, who));
         if (took.length) { broadcast('elements', { elements: took }, scene.c); saveSoon(); diffSoon(); }
         return send(res, 200, { ok: true, took: took.length });
       }
       if (req.method === 'GET' && url.pathname === '/api/changes') {
         const c = url.searchParams.get('c'), since = Number(url.searchParams.get('since') ?? -1);
-        if (!c) return send(res, 400, { error: 'no page id' });
+        if (!pageId(c)) return send(res, 400, { error: 'no page id' });
         touch(c, shown(authorOf(url.searchParams.get('name'), far)));
         // First poll, a restarted server, or a page too far behind the log: start from the room, and say "reload the scene".
         if (since < 0 || since > seq || (log.length && since < log[0].seq - 1)) return send(res, 200, { seq, reset: since >= 0, events: roster(c) });
@@ -364,14 +456,17 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         waiting.add(w); res.on('close', () => { waiting.delete(w); clearTimeout(w.t); });
         return;
       }
-      if (req.method === 'POST' && url.pathname === '/api/leave') { const { c } = JSON.parse(await body(req) || '{}'); leave(c); return send(res, 200, { ok: true }); }
+      if (req.method === 'POST' && url.pathname === '/api/leave') { const { c } = await json(req); leave(c); return send(res, 200, { ok: true }); }
       if (req.method === 'POST' && url.pathname === '/api/presence') {
-        const p = JSON.parse(await body(req)), c = clients.get(p.c);
-        if (c) broadcast('presence', { id: p.c, name: c.name, pointer: p.pointer, button: p.button, selected: p.selected || {} }, p.c);
+        // Passed to every other page as Excalidraw collaborator data, so only the shapes Excalidraw expects.
+        const p = await json(req), c = clients.get(p.c), q = p.pointer;
+        const pointer = q && Number.isFinite(q.x) && Number.isFinite(q.y) ? { x: q.x, y: q.y, tool: q.tool === 'laser' ? 'laser' : 'pointer' } : null;
+        const selected = Object.fromEntries(Object.keys(p.selected && typeof p.selected === 'object' ? p.selected : {}).filter(k => ID.test(k)).slice(0, 500).map(k => [k, true]));
+        if (c) broadcast('presence', { id: p.c, name: c.name, pointer, button: p.button === 'down' ? 'down' : 'up', selected }, p.c);
         return send(res, 200, { ok: true });
       }
       send(res, 404, { error: 'not found' });
-    } catch (e) { console.error('ERROR', e.message); if (!res.headersSent) send(res, 500, { error: e.message }); }
+    } catch (e) { if (!e.status) console.error('ERROR', e.message); if (!res.headersSent) send(res, e.status || 500, { error: e.message }, 'application/json', e.status === 413 ? { connection: 'close' } : {}); }
   });
   server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `port ${port} is taken: pass --port <another>` : e.message); process.exit(1); });
   server.listen(port, '127.0.0.1', () => console.log(`board on http://localhost:${port} (only this computer can reach it)`));
@@ -381,6 +476,8 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
 // Open the running board to teammates: a Cloudflare quick tunnel (no account, a random trycloudflare.com name) plus a
 // fresh secret key. The key lives in live/share.json only while this process runs; the server checks that this process
 // is alive, so a killed share closes the door even if the tunnel lingers.
+// share.json holds the link's key: readable by its owner only, even where an older copy was looser.
+export function writeShare(file, data) { fs.writeFileSync(file, JSON.stringify(data), { mode: 0o600 }); fs.chmodSync(file, 0o600); }
 export async function share({ dir, port = DEFAULT_PORT } = {}) {
   const DIR = path.resolve(dir || '.');
   const { live: LIVE, scene: SCENE, share: SHARE } = files(DIR);
@@ -391,7 +488,7 @@ export async function share({ dir, port = DEFAULT_PORT } = {}) {
   fs.mkdirSync(LIVE, { recursive: true });
   if (fs.existsSync(SCENE)) fs.copyFileSync(SCENE, path.join(LIVE, `scene.before-share-${now().replace(/[:.]/g, '-')}.json`));   // anyone with the link can edit
   const key = crypto.randomBytes(18).toString('base64url');
-  fs.writeFileSync(SHARE, JSON.stringify({ key, pid: process.pid, port, started: now() }));
+  writeShare(SHARE, { key, pid: process.pid, port, started: now() });
   const cf = spawn('cloudflared', ['tunnel', '--no-autoupdate', '--url', `http://127.0.0.1:${port}`], { stdio: ['ignore', 'pipe', 'pipe'] });
   const close = code => { try { fs.unlinkSync(SHARE); } catch {} try { cf.kill(); } catch {} process.exit(code); };
   process.on('SIGINT', () => close(0)); process.on('SIGTERM', () => close(0));
@@ -403,7 +500,7 @@ export async function share({ dir, port = DEFAULT_PORT } = {}) {
     if (!m) return;
     printed = true;
     const link = `${m[0]}/?k=${key}`;
-    fs.writeFileSync(SHARE, JSON.stringify({ key, pid: process.pid, port, started: now(), url: m[0] }));
+    writeShare(SHARE, { key, pid: process.pid, port, started: now(), url: m[0] });
     console.log(`share link: ${link}\nAnyone with this link can see and edit the board until you stop this (Ctrl-C, or sketchcall unshare).`);
   };
   cf.stdout.on('data', look); cf.stderr.on('data', look);

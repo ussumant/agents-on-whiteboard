@@ -11,13 +11,14 @@ export const SAMPLE = path.join(ROOT, "examples", "pizza.excalidraw");
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const ok = (c, m) => { console.log(`${c ? "PASS" : "FAIL"} ${m}`); if (!c) process.exitCode = 1; };
 // Ask every 100 ms until fn (sync or async) holds; returns the wait in ms, or -1 after `ms`. A throw counts as "not yet"
-// (a page mid-reload, a record file not written yet). The gates wait from here, not with a timer inside the page: a page in
-// a background tab runs its timers and network callbacks late when the machine is busy (measured: an op landed 0.4–5 s
-// after the tab in front showed it, at load 25–30 on 10 cores).
+// (a page mid-reload, a record file not written yet), and so does a try that takes over 5 s (an evaluate in a frame that
+// never got a page never returns). The gates wait from here, not with a timer inside the page: a page in a background tab
+// runs its timers and network callbacks late when the machine is busy (measured: an op landed 0.4–5 s after the tab in
+// front showed it, at load 25–30 on 10 cores).
 export async function poll(fn, ms = 15000) {
   const t0 = Date.now();
   for (;;) {
-    let y = false; try { y = await fn(); } catch { /* not yet */ }
+    let y = false; try { y = await Promise.race([fn(), sleep(5000).then(() => false)]); } catch { /* not yet */ }
     if (y) return Date.now() - t0;
     if (Date.now() - t0 >= ms) return -1;
     await sleep(100);
@@ -43,8 +44,19 @@ export function scratch(name, board = SAMPLE) {
 }
 // `sketchcall <args>` in the board folder, as an agent's shell would run it.
 export const cli = (dir, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd: dir }).toString();
+// The write key a page gets in its HTML (a fresh one each time the server starts), for a gate that posts like a page.
+// `headers` lets a gate ask as a link guest.
+export async function pageKey(url, headers = {}) {
+  const h = await (await fetch(url, { headers })).text(), m = h.match(/var BOARD = (\{[^\n]*\});\n/);
+  return m ? JSON.parse(m[1]).token : undefined;
+}
+// A page's write: JSON, its key, and the board's own Origin (what a browser sends).
+export const asPage = (key, origin) => ({ "content-type": "application/json", ...(key ? { "x-sketchcall-key": key } : {}), ...(origin ? { origin } : {}) });
 // The board server, started the way a person starts it; resolves once it answers.
 export async function serveBoard(dir, port) {
+  // A server left on the port (a killed run) would answer for this board and the gate would test the wrong folder.
+  const busy = await fetch(`http://127.0.0.1:${port}/api/hello`, { signal: AbortSignal.timeout(500) }).then(() => true, () => false);
+  if (busy) throw new Error(`port ${port} already serves a board: stop it first (lsof -ti tcp:${port} -sTCP:LISTEN)`);
   const srv = spawn(process.execPath, [BIN, "serve", "--port", String(port)], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
   let err = ""; srv.stderr.on("data", (d) => { err += d; });
   process.on("exit", () => srv.kill());   // a test that crashes still stops its server

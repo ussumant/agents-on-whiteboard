@@ -370,7 +370,7 @@
   <div id="thread"></div>
   <div id="compose">
     <div id="on">on: the whole board</div>
-    <textarea id="box" placeholder="Click a box, or drag over an area of the board, then type. Enter sends, Shift+Enter is a new line."></textarea>
+    <textarea id="box" maxlength="4000" placeholder="Click a box, or drag over an area of the board, then type. Enter sends, Shift+Enter is a new line."></textarea>
     <button id="send">Send</button>
   </div>
 </div>
@@ -395,10 +395,13 @@
   window.EXCALIDRAW_ASSET_PATH = "https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/";
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"
+        integrity="sha384-DGyLxAyjq0f9SPpVevD6IgztCFlnMF6oW/XQGmfe+IsZ8TqEiDrcHkMLKI6fiB/Z" crossorigin="anonymous"
         onerror="window.__reportFailure('The board could not load.', 'Could not fetch react.production.min.js from cdnjs.cloudflare.com. Check your connection, then reload.')"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"
+        integrity="sha384-gTGxhz21lVGYNMcdJOyq01Edg0jhn/c22nsx0kyqP0TxaV5WVdsSH1fSDUf5YJj1" crossorigin="anonymous"
         onerror="window.__reportFailure('The board could not load.', 'Could not fetch react-dom.production.min.js from cdnjs.cloudflare.com. Check your connection, then reload.')"></script>
 <script src="https://unpkg.com/@excalidraw/excalidraw@0.17.6/dist/excalidraw.production.min.js"
+        integrity="sha384-2RnaDBiRrWXqT5k4HtP4X4gh/ukRFg9zn1Sjt+JeYQOUWSYYnN1tKE4FL9QA3Wdl" crossorigin="anonymous"
         onerror="window.__reportFailure('The board could not load its editor.', 'Could not fetch excalidraw.production.min.js from unpkg.com. Check your connection, then reload.')"></script>
 
 <script>
@@ -551,6 +554,9 @@ const live = (() => {
   const onServer = location.protocol.startsWith("http"), probe = /[?&]probe/.test(location.search);
   let api = null, sel = null, firstPoll = true;
   const seen = new Set(), $ = (id) => document.getElementById(id);
+  // Every write carries the key the server put in this page (another website can't read the page, so it can't send it),
+  // and the room's long poll does too.
+  const KEY = { "x-sketchcall-key": String((window.__boardInfo || {}).token || "") }, WRITE = { "content-type": "application/json", ...KEY };
   // Who this page is: a name typed once (kept in localStorage), ?name=, or "You", the person at this computer. A shared
   // link's key (?k=) is a cookie by now, so it leaves the address bar.
   const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname), NAME_KEY = "board:name", cid = Math.random().toString(36).slice(2, 10);
@@ -612,7 +618,7 @@ const live = (() => {
     const have = api.getFiles(), out = [];
     for (const e of api.getSceneElements()) if (e.type === "image" && have[e.fileId] && !picsSent.has(e.fileId)) { picsSent.add(e.fileId); out.push(have[e.fileId]); }
     if (!out.length) return;
-    fetch("/api/files", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files: out.map(({ id, mimeType, dataURL, created }) => ({ id, mimeType, dataURL, created })), c: cid, name: me }) })
+    fetch("/api/files", { method: "POST", headers: WRITE, body: JSON.stringify({ files: out.map(({ id, mimeType, dataURL, created }) => ({ id, mimeType, dataURL, created })), c: cid, name: me }) })
       .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); }).catch(() => { for (const f of out) picsSent.delete(f.id); });   // resent with the next change
   }
   async function pullFiles(force) {
@@ -634,7 +640,7 @@ const live = (() => {
     const delta = api.getSceneElementsIncludingDeleted().filter((e) => sent.get(e.id) !== e.version);
     if (!delta.length) return;
     for (const e of delta) sent.set(e.id, e.version);
-    fetch("/api/scene", { method: "POST", keepalive: !!leaving, headers: { "content-type": "application/json" }, body: JSON.stringify({ elements: delta, c: cid, name: me }) })
+    fetch("/api/scene", { method: "POST", keepalive: !!leaving, headers: WRITE, body: JSON.stringify({ elements: delta, c: cid, name: me }) })
       .catch(() => { for (const e of delta) sent.delete(e.id); });   // resent with the next change
   }
   function drawPeers() {
@@ -651,10 +657,11 @@ const live = (() => {
   async function listen() {
     joined = true;
     let since = -1;
-    window.addEventListener("pagehide", () => navigator.sendBeacon("/api/leave", JSON.stringify({ c: cid })));
+    // (a fetch that outlives the page, not a beacon: a beacon can't carry the key)
+    window.addEventListener("pagehide", () => fetch("/api/leave", { method: "POST", keepalive: true, headers: WRITE, body: JSON.stringify({ c: cid }) }).catch(() => {}));
     for (;;) {
       try {
-        const r = await (await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store" })).json();
+        const r = await (await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store", headers: KEY })).json();
         if (r.reset) { peers.clear(); merge((await (await fetch("/api/scene", { cache: "no-store" })).json()).elements); pushNow(); }   // the server restarted, or we fell behind
         since = r.seq;
         for (const ev of r.events || []) if (handle[ev.event]) handle[ev.event](ev.data);
@@ -669,7 +676,7 @@ const live = (() => {
     if (ptrTimer) return;
     ptrTimer = setTimeout(() => {
       ptrTimer = null;
-      fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ c: cid, ...ptrNext, selected: api.getAppState().selectedElementIds }) }).catch(() => {});
+      fetch("/api/presence", { method: "POST", headers: WRITE, body: JSON.stringify({ c: cid, ...ptrNext, selected: api.getAppState().selectedElementIds }) }).catch(() => {});
     }, 60);
   }
   const labelOf = (id) => {
@@ -994,7 +1001,7 @@ const live = (() => {
     if (pick === "change" && !text) { w.classList.add("want"); w.focus(); $("tcAns").textContent = "Say what to change, then press ✎ change or Enter."; return; }
     w.classList.remove("want");
     try {
-      const r = await fetch("/api/answer", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tour_id: t.id, step, pick, text, name: me, c: cid }) });
+      const r = await fetch("/api/answer", { method: "POST", headers: WRITE, body: JSON.stringify({ tour_id: t.id, step, pick, text, name: me, c: cid }) });
       const it = await r.json(); if (!r.ok) throw new Error(it.error || `HTTP ${r.status}`);
       if (!seen.has(it.id)) { seen.add(it.id); answerOp(it); }
       if (T.cur === t && T.at === step) { w.value = ""; $("tcAns").textContent = `Sent to ${t.presenter}.`; }
@@ -1139,7 +1146,7 @@ const live = (() => {
   function report(action) {
     const t = T.cur; if (!t || probe || !onServer) return;
     const body = JSON.stringify({ c: cid, name: me, tour_id: t.id, title: t.title, index: T.at, total: t.steps.length, action });
-    canReport.then((ok) => ok && fetch("/api/tour", { method: "POST", headers: { "content-type": "application/json" }, body }).catch(() => {}));
+    canReport.then((ok) => ok && fetch("/api/tour", { method: "POST", headers: WRITE, body }).catch(() => {}));
   }
 
   /* the ops. During the first poll the record replays: a tour, a step or a gesture from before this page loaded only
@@ -1406,9 +1413,17 @@ const live = (() => {
     const time = new Date(item.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     // a reply from a named presenter says its name, in its pointer's colour
     const agent = item.author === "claude", who = agent ? presName(item.presenter) : isMe(item.author) ? "You" : nameOf(item.author);
-    div.innerHTML = `<div class="meta"><b${who === "Claude" || who === "You" ? "" : ` style="color:${agent ? ptrOf(who).ink : inkOf(who)}"`}>${who.replace(/</g, "&lt;")}</b> · ${time}${on ? ` · <a href="#" data-ids="${(on.ids || [on.id]).join(",")}">${String(on.label).replace(/</g, "&lt;")}</a>` : ""}</div><div class="body"></div>`;
-    div.querySelector(".body").textContent = item.text;
-    const a = div.querySelector("a"); if (a) a.onclick = (ev) => { ev.preventDefault(); show(on); };
+    // Built from DOM calls, never an HTML string: the name, the label and the ids are whatever a commenter sent.
+    const meta = document.createElement("div"), b = document.createElement("b"), body = document.createElement("div");
+    meta.className = "meta"; body.className = "body"; body.textContent = item.text;
+    b.textContent = who; if (who !== "Claude" && who !== "You") b.style.color = agent ? ptrOf(who).ink : inkOf(who);
+    meta.append(b, ` · ${time}`);
+    if (item.via === "link") meta.append(" · via link");   // a teammate on the share link, never the host
+    if (on) {
+      const a = document.createElement("a"); a.href = "#"; a.dataset.ids = (on.ids || [on.id]).join(","); a.textContent = String(on.label ?? on.id ?? "");
+      a.onclick = (ev) => { ev.preventDefault(); show(on); }; meta.append(" · ", a);
+    }
+    div.append(meta, body);
     if (on) addPin(on, item, div);
     loopAdd(item);   // a comment on a tour step (or a reply to one) joins that step's feedback loop on the card
     $("thread").appendChild(div); $("thread").scrollTop = $("thread").scrollHeight;
@@ -1478,13 +1493,14 @@ const live = (() => {
     pollTimer = setTimeout(poll, pollAgain ? 0 : 1500); pollAgain = false;
   }
   async function post(text, on) {
-    const it = await (await fetch("/api/comment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, on, name: me }) })).json();
+    const r = await fetch("/api/comment", { method: "POST", headers: WRITE, body: JSON.stringify({ text, on, name: me }) }), it = await r.json();
+    if (!r.ok) throw Object.assign(new Error(it.error || `refused (${r.status})`), { said: true });
     if (!seen.has(it.id)) { seen.add(it.id); render(it); }
   }
   async function send() {
     const text = $("box").value.trim(); if (!text) return;
     $("box").value = ""; $("send").disabled = true;
-    try { await post(text, sel); } catch (e) { $("box").value = text; setStatus("not sent: the live server is down"); }
+    try { await post(text, sel); } catch (e) { $("box").value = text; setStatus(e.said ? `not sent: ${e.message}` : "not sent: the live server is down"); }
     $("send").disabled = false; $("box").focus();
   }
   return {
@@ -1493,6 +1509,12 @@ const live = (() => {
       if (!onServer) { $("conn").textContent = "offline: open it from the live server"; return; }
       setTimeout(() => pullFiles(true), 300);   // pictures pasted on the board, from live/files (once the scene is in)
       setInterval(() => { if (!probe && me) pushFiles(); }, 2000);   // a pasted picture can finish loading after the last change
+      // A ?name= in a link changes who you post as in this tab, even on this computer: say so above the composer.
+      const urlName = (() => { try { return new URLSearchParams(location.search).get("name"); } catch (e) { return null; } })();
+      if (atHome && urlName && me) {
+        const as = document.createElement("div"); as.id = "postingAs"; as.textContent = `posting as ${me} (from the link's ?name=)`;
+        as.style.cssText = "font-size:12px;color:#868e96;margin-bottom:4px"; $("compose").insertBefore(as, $("on"));
+      }
       $("send").onclick = send;
       $("box").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
       const relayout = () => setTimeout(() => window.dispatchEvent(new Event("resize")), 50);

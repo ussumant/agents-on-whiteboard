@@ -4,11 +4,12 @@
 //   node tests/mcp-test.mjs [spare port 4900–4940]      → PASS lines
 import fs from "node:fs";
 import { execFileSync } from "node:child_process";
-import { ok, sleep, scratch, mcpSession, portArg } from "./lib.mjs";
+import { ok, sleep, scratch, mcpSession, portArg, pageKey, asPage } from "./lib.mjs";
 
 const PORT = portArg(2, 4915), D = scratch("mcp"), U = `http://127.0.0.1:${PORT}`;
 const listeners = () => { try { return execFileSync("lsof", ["-t", `-iTCP:${PORT}`, "-sTCP:LISTEN"]).toString().split("\n").filter(Boolean); } catch { return []; } };
-const comment = (text, name) => fetch(`${U}/api/comment`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, on: { id: "queue", label: "📬 Order queue" }, ...(name ? { name } : {}) }) }).then((r) => r.json());
+// A comment the way the board's page sends it: with the key the server put in the page (a new one each time it starts).
+const comment = async (text, name) => fetch(`${U}/api/comment`, { method: "POST", headers: asPage(await pageKey(`${U}/`), U), body: JSON.stringify({ text, on: { id: "queue", label: "📬 Order queue" }, ...(name ? { name } : {}) }) }).then((r) => r.json());
 if (listeners().length) { console.error(`port ${PORT} is taken`); process.exit(2); }
 
 const sessions = [];
