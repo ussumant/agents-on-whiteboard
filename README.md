@@ -54,8 +54,9 @@ These agents hear you through `board_wait`. It returns your next comment as soon
 Any agent that can run a command can take part, from the board's folder:
 
 ```
-npx sketchcall wait                          # sleeps until your next comment, prints it as JSON, exits
+npx sketchcall wait                            # sleeps until your next comment, prints it as JSON, exits
 npx sketchcall say "..." --reply-to <its id>   # answers on the same box
+npx sketchcall wait --since <its id>           # the next one, even if it came in while you were replying
 ```
 
 ## How it works

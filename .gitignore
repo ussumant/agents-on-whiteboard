@@ -3,3 +3,4 @@ live/
 .sketchcall/
 *.tgz
 .DS_Store
+package-lock.json

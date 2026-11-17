@@ -18,6 +18,11 @@ ok(market.owner && market.owner.name && market.description, "1c the marketplace 
 ok(!pkg.dependencies && pkg.bin[NAME] === `bin/${NAME}.mjs` && /^>=\s*20/.test(pkg.engines.node) && /github\.com\/[\w.-]+\/[\w.-]+/.test(pkg.repository.url) && pkg.homepage && pkg.bugs.url && pkg.license === "MIT",
   "1d package.json: bin, node >= 20, repository, homepage, bugs, MIT, no runtime dependencies");
 
+// 1e no lockfile in git at the plugin root: when Claude Code copies a plugin from a git marketplace, a package.json beside
+// a lockfile makes it install the packages there, dev ones included (it put 56 MB of the test browser in every cache)
+const tracked = spawnSync("git", ["ls-files", "package-lock.json", "npm-shrinkwrap.json", "bun.lock"], { cwd: ROOT, encoding: "utf8" }).stdout.trim();
+ok(!tracked, `1e no lockfile is tracked at the root, so installing the plugin installs no packages (${tracked || "none"})`);
+
 // 2 the MCP server, run exactly as plugin.json declares it
 const srv = plugin.mcpServers[NAME], sub = (s) => s.replaceAll("${CLAUDE_PLUGIN_ROOT}", ROOT);
 const p = spawn(sub(srv.command), srv.args.map(sub), { stdio: ["pipe", "pipe", "pipe"] });

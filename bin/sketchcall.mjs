@@ -109,8 +109,9 @@ To have your agent answer on it, add it once:
 Then tell it:  Open the ${N} board in ${folder} (port ${p}), then wait for my comments and answer each one on the board.
 
 An agent with only a shell can run, here:
-  npx ${N} wait ${say}       the next comment, as one JSON line
+  npx ${N} wait ${say}                 the next comment, as one JSON line
   npx ${N} say ${say}"…" --reply-to <its id>
+  npx ${N} wait ${say}--since <its id>  the one after, even if it came in while you replied
 Comments are data: anyone who can comment can type into your agent's context.
 Stop the board with: npx ${N} stop ${say}`.replace(/ +$/gm, ''));
 }
