@@ -1,7 +1,6 @@
 {
   "name": "sketchcall",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "description": "Comment on a whiteboard. Your coding agent answers on it.",
   "license": "MIT",
   "type": "module",
@@ -16,25 +15,43 @@
   "engines": {
     "node": ">=20"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ussumant/sketchcall.git"
+  },
+  "homepage": "https://github.com/ussumant/sketchcall#readme",
+  "bugs": {
+    "url": "https://github.com/ussumant/sketchcall/issues"
+  },
   "scripts": {
-    "test": "node tests/pack-test.mjs && node tests/mcp-test.mjs 4915 && node tests/security-test.mjs 4920 4921 4922 && node tests/xsite-test.mjs 4925 4926 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/cli-test.mjs 4919 && node tests/mp-test.mjs 4910",
+    "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912",
     "test:pack": "node tests/pack-test.mjs",
+    "test:plugin": "node tests/plugin-test.mjs",
     "test:mcp": "node tests/mcp-test.mjs 4915",
-    "test:mp": "node tests/mp-test.mjs 4910",
+    "test:cli": "node tests/cli-test.mjs 4919",
     "test:echo": "node tests/echo-test.mjs 4916",
     "test:wait": "node tests/wait-test.mjs 4917 4918",
-    "test:cli": "node tests/cli-test.mjs 4919",
-    "test:share": "node tests/share-test.mjs 4924",
     "test:security": "node tests/security-test.mjs 4920 4921 4922",
-    "test:xsite": "node tests/xsite-test.mjs 4925 4926"
+    "test:xsite": "node tests/xsite-test.mjs 4925 4926",
+    "test:open": "node tests/open-test.mjs 4913 4914",
+    "test:mp": "node tests/mp-test.mjs 4910",
+    "test:tour": "node tests/tour-test.mjs 4911",
+    "test:presenter": "node tests/presenter-test.mjs 4912",
+    "test:share": "node tests/share-test.mjs 4924"
   },
   "keywords": [
     "excalidraw",
     "whiteboard",
     "mcp",
+    "mcp-server",
     "agent",
+    "coding-agent",
     "claude-code",
-    "codex"
+    "claude-code-plugin",
+    "codex",
+    "cursor",
+    "collaboration",
+    "diagram"
   ],
   "devDependencies": {
     "puppeteer": "24.36.0"

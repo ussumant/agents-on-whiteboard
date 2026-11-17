@@ -1,0 +1,14 @@
+{
+  "name": "sketchcall",
+  "description": "A live whiteboard call with your coding agent.",
+  "owner": {
+    "name": "sketchcall contributors"
+  },
+  "plugins": [
+    {
+      "name": "sketchcall",
+      "source": "./",
+      "description": "Comment on a whiteboard. Your coding agent answers on it."
+    }
+  ]
+}
