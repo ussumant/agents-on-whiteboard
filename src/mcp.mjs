@@ -13,7 +13,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { say, op, thread, files, claudeWrote, tour, tourStep, point, tourWhere, presenterName, samePresenter, seedFile, DEFAULT_PORT, HOME, BREAKS, ID } from './server.mjs';
+import { say, op, thread, files, tour, tourStep, point, tourWhere, presenterName, samePresenter, seedFile, shown, DEFAULT_PORT, HOME, BREAKS, ID } from './server.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = path.join(ROOT, 'bin', 'sketchcall.mjs');
@@ -31,7 +31,8 @@ export function runMcp({ channels = false } = {}) {
   // loses every other control character. Ids pass only when they look like ids (idOf); box_ids keeps every id whole
   // (at most 50, each id-shaped), so the agent never gets half an id.
   const metaOf = (v, k) => { const t = String(v).replace(BREAKS, ' ').replace(/"/g, "'").replace(/</g, '‹').replace(/>/g, '›').replace(/\s+/g, ' ').trim(); return k === 'box_ids' ? t : t.slice(0, 120); };
-  const push = (content, meta) => out({ method: 'notifications/claude/channel', params: { content: String(content).replace(BREAKS, b => b.replace(/[^\n]/g, ' ')),
+  // < and > in the text become ‹ and ›, so a comment can't carry a <channel …> tag of its own into the session.
+  const push = (content, meta) => out({ method: 'notifications/claude/channel', params: { content: String(content).replace(BREAKS, b => b.replace(/[^\n]/g, ' ')).replace(/</g, '‹').replace(/>/g, '›'),
     meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, metaOf(v, k)]).filter(([, v]) => v !== '')) } });
   const idOf = v => typeof v === 'string' && ID.test(v) ? v : undefined;
   const idsOf = v => Array.isArray(v) ? v.slice(0, 50).map(idOf).filter(Boolean).join(',') : undefined;
@@ -85,14 +86,12 @@ export function runMcp({ channels = false } = {}) {
       push(it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, box_id: idOf(on?.id), box_label: on?.label,
         box_ids: idsOf(on?.ids), area: on?.rect && ['x', 'y', 'w', 'h'].map(k => Math.round(on.rect[k])).join(','), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
     });
-    tail(f.events, l => {
-      if (!l.startsWith('BOARD: ')) return;
-      // "BOARD: Sam wrote "…" (id)" or "BOARD: Sam changed id to "…"".
-      const text = l.slice(7), id = (text.match(/^.+? changed (\S+) to "/) || text.match(/\(([^)]+)\)$/) || [])[1];
-      // The agent's own op text never comes back to it as someone's writing.
-      const t = (text.match(/^.+? (?:wrote|changed \S+ to) "(.*)"/) || [])[1];
-      if (id && t != null && claudeWrote(dir)(id, t)) return;
-      push(text, { kind: 'board', board, element_id: idOf(id), ts: new Date().toISOString() });
+    // Canvas writing, from the server's own records (live/canvas.jsonl: who, via the link or not, which element, what
+    // text), never by reading a log line's words back. The server leaves out the agent's own text while it's unchanged.
+    tail(f.canvas, l => {
+      const it = JSON.parse(l), who = `${shown(it.author)}${it.via ? ' via link' : ''}`;
+      push(it.change === 'changed' ? `${who} changed ${it.key} to "${it.text}"` : `${who} wrote "${it.text}" (${it.key})`,
+        { kind: 'board', board, element_id: idOf(it.id), author: it.author || HOME, via: it.via, ts: it.ts });
     });
   }
 

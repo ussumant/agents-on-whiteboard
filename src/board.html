@@ -556,10 +556,13 @@ const live = (() => {
   const seen = new Set(), $ = (id) => document.getElementById(id);
   // Every write carries the key the server put in this page (another website can't read the page, so it can't send it),
   // and the room's long poll does too.
-  const KEY = { "x-sketchcall-key": String((window.__boardInfo || {}).token || "") }, WRITE = { "content-type": "application/json", ...KEY };
+  // The page id and its secret come from the server with the page: the id is how the room knows this page, the secret
+  // is what lets a call act as it.
+  const INFO = window.__boardInfo || {};
+  const KEY = { "x-sketchcall-key": String(INFO.token || ""), "x-sketchcall-page": String(INFO.pageKey || "") }, WRITE = { "content-type": "application/json", ...KEY };
   // Who this page is: a name typed once (kept in localStorage), ?name=, or "You", the person at this computer. A shared
   // link's key (?k=) is a cookie by now, so it leaves the address bar.
-  const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname), NAME_KEY = "board:name", cid = Math.random().toString(36).slice(2, 10);
+  const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname), NAME_KEY = "board:name", cid = String(INFO.page || Math.random().toString(36).slice(2, 10));
   if (/[?&]k=/.test(location.search)) { const u = new URL(location.href); u.searchParams.delete("k"); history.replaceState(null, "", u); }
   let me = (() => { try { return new URLSearchParams(location.search).get("name") || localStorage.getItem(NAME_KEY); } catch (e) { return null; } })() || (atHome ? "You" : "");
   me = String(me).trim().slice(0, 24);
@@ -589,8 +592,26 @@ const live = (() => {
     };
     document.body.appendChild(d); setTimeout(() => d.querySelector("input").focus(), 0);
   }
+  // Elements from anywhere but this page, read the way Excalidraw reads a file, one at a time: a broken shape (from an
+  // older server, or a scene.json edited by hand) is left out instead of blanking the board, and embeds never come in.
+  const SHAPES = new Set(["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text", "image", "frame", "magicframe"]);
+  const pts = (p, min) => Array.isArray(p) && p.length >= min && p.length <= 10000 && p.every((q) => Array.isArray(q) && q.length === 2 && Number.isFinite(q[0]) && Number.isFinite(q[1]));
+  const shapeOk = (e) => !!e && typeof e === "object" && typeof e.id === "string" && SHAPES.has(e.type) && e.containerId !== e.id
+    && (e.boundElements == null || (Array.isArray(e.boundElements) && e.boundElements.every((b) => b && typeof b.id === "string")))
+    && (e.groupIds == null || (Array.isArray(e.groupIds) && e.groupIds.every((g) => typeof g === "string")))
+    && (!["arrow", "line"].includes(e.type) || pts(e.points, 2))
+    && (e.type !== "freedraw" || (pts(e.points, 1) && (e.pressures == null || (Array.isArray(e.pressures) && e.pressures.every(Number.isFinite)))));
+  function restored(list) {
+    const out = [];
+    for (const e of Array.isArray(list) ? list : []) {
+      if (!shapeOk(e)) continue;
+      try { const [x] = ExcalidrawLib.restoreElements([e], null); if (x && shapeOk(x)) out.push(x); } catch (err) { /* left out */ }
+    }
+    return out;
+  }
   // Everyone else's changes: take an element when theirs is newer, never the one this page is dragging or typing in.
   function merge(remote) {
+    remote = restored(remote);
     const st = api.getAppState(), busy = new Set([st.editingElement, st.draggingElement, st.resizingElement].filter(Boolean).map((e) => e.id));
     const byId = new Map(api.getSceneElementsIncludingDeleted().map((e) => [e.id, e]));
     let took = 0;
@@ -651,7 +672,8 @@ const live = (() => {
   }
   // The room: long-poll /api/changes. It answers as soon as anything this page hasn't seen happens (or after 25 s), which
   // works through any tunnel; a Cloudflare quick tunnel never delivers server-sent events.
-  let joined = false;
+  let joined = false, stale = false;
+  const STALE = "the board server restarted: reload this page";
   const handle = { elements: (d) => merge(d.elements), join: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), name: d.name }),
     presence: (d) => peers.set(d.id, { ...(peers.get(d.id) || {}), ...d }), leave: (d) => peers.delete(d.id), thread: () => poll(), files: () => pullFiles(true) };
   async function listen() {
@@ -661,7 +683,11 @@ const live = (() => {
     window.addEventListener("pagehide", () => fetch("/api/leave", { method: "POST", keepalive: true, headers: WRITE, body: JSON.stringify({ c: cid }) }).catch(() => {}));
     for (;;) {
       try {
-        const r = await (await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store", headers: KEY })).json();
+        const res = await fetch(`/api/changes?c=${cid}&name=${encodeURIComponent(me)}&since=${since}`, { cache: "no-store", headers: KEY });
+        // A server that restarted has new keys and doesn't know this page: say so, and ask again only now and then.
+        if (res.status === 403) { stale = true; $("dot").className = "dot off"; $("conn").textContent = STALE; await new Promise((ok) => setTimeout(ok, 15000)); continue; }
+        const r = await res.json();
+        if (!res.ok) throw new Error(r.error || String(res.status));
         if (r.reset) { peers.clear(); merge((await (await fetch("/api/scene", { cache: "no-store" })).json()).elements); pushNow(); }   // the server restarted, or we fell behind
         since = r.seq;
         for (const ev of r.events || []) if (handle[ev.event]) handle[ev.event](ev.data);
@@ -1481,7 +1507,7 @@ const live = (() => {
     polling = true; clearTimeout(pollTimer);
     try {
       const { items } = await (await fetch("/api/thread", { cache: "no-store" })).json();
-      $("dot").className = "dot on"; $("conn").textContent = here();
+      if (stale) { $("dot").className = "dot off"; $("conn").textContent = STALE; } else { $("dot").className = "dot on"; $("conn").textContent = here(); }
       for (const it of items) {
         if (seen.has(it.id)) continue; seen.add(it.id);
         if (it.kind === "comment") render(it);
@@ -1538,7 +1564,8 @@ const live = (() => {
       placeTour(appState); placePointer(appState);
       queuePush();
     },
-    pushScene() { if (onServer && !probe && api && me) pushNow(true); },   // the page is closing: send what's left now
+    pushScene() { if (onServer && !probe && api && me) pushNow(true); },
+    restored,   // the page is closing: send what's left now
     pointer,
     onServer, probe,
     // The scene to start from: the server's when it has one (a new tab or a teammate joins what's there, never a fresh
@@ -1550,7 +1577,9 @@ const live = (() => {
         if (!elements || !elements.length) return null;
         const mine = new Map((cached || []).map((e) => [e.id, e]));
         for (const e of elements) sent.set(e.id, e.version);
-        const out = ExcalidrawLib.restoreElements(elements, null, { repairBindings: true }).map((e) => { const l = mine.get(e.id); return l && newer(l, e) ? l : e; });
+        let ok = restored(elements);
+        try { ok = ExcalidrawLib.restoreElements(ok, null, { repairBindings: true }); } catch (e) { /* each one already reads on its own */ }
+        const out = ok.map((e) => { const l = mine.get(e.id); return l && newer(l, e) ? l : e; });
         const dropped = [...mine.values()].filter((e) => !e.isDeleted && !sent.has(e.id)).length;
         if (dropped) console.info(`[live] ${dropped} element(s) only in this browser's old copy were left out; the server's board wins`);
         return layer(out);
@@ -1574,7 +1603,7 @@ async function start() {
       initialElements = [];   // the server has no board yet (or the page was opened as a plain file)
       seededFresh = true;
     } else {
-      initialElements = ExcalidrawLib.restoreElements(JSON.parse(savedRaw), null, { repairBindings: true });
+      initialElements = live.restored(JSON.parse(savedRaw));   // this browser's own copy, read element by element too
       seededFresh = false;
     }
   } catch (e) {
@@ -1739,6 +1768,7 @@ async function start() {
         onChange: scheduleSave,
         onPointerUpdate: live.pointer,
         excalidrawAPI: onExcalidrawAPI,
+        validateEmbeddable: () => false,   // no embeds: any website, or a tweet's script, inside the board
         theme: "light",
       })
     )

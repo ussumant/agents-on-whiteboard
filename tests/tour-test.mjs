@@ -121,7 +121,7 @@ await front(A); await A.keyboard.press("Escape"); await sleep(300); ok(!(await t
 // 4 the person's moves land in events.log as quiet TOUR lines (debounced, never in the thread, never matching the watcher)
 await poll(() => tourLines().some((l) => l.startsWith("TOUR: Host exited at step")));
 const tl = tourLines();
-ok(tl.some((l) => /^TOUR: Host at step \d\/4 \(How the test Board fits together\)$/.test(l)) && tl.some((l) => l.startsWith("TOUR: Host finished")) && tl.some((l) => l.startsWith("TOUR: Host exited at step")),
+ok(tl.some((l) => /^TOUR: Host at step \d\/4 \(How the test B·oard fits together\)$/.test(l)) && tl.some((l) => l.startsWith("TOUR: Host finished")) && tl.some((l) => l.startsWith("TOUR: Host exited at step")),
   `4 TOUR lines name the host's step, finish and exit ${JSON.stringify(tl.slice(-3))}`);
 ok(!ev().split("\n").some((l) => WATCH.test(l)), "4b no events.log line matches a watcher's COMMENT|BOARD|EDIT (the title's BOARD is defanged)");
 ok(thread().every((i) => i.kind === "comment" || i.kind === "op") && !thread().some((i) => i.kind === "op" && !["tour", "tour_step", "point"].includes(i.op)), "4c the moves never reach thread.jsonl");

@@ -50,8 +50,13 @@ export async function pageKey(url, headers = {}) {
   const h = await (await fetch(url, { headers })).text(), m = h.match(/var BOARD = (\{[^\n]*\});\n/);
   return m ? JSON.parse(m[1]).token : undefined;
 }
-// A page's write: JSON, its key, and the board's own Origin (what a browser sends).
-export const asPage = (key, origin) => ({ "content-type": "application/json", ...(key ? { "x-sketchcall-key": key } : {}), ...(origin ? { origin } : {}) });
+// Everything a page gets in its HTML: the write key, and its own page id with that page's secret (the server issues a new
+// pair each time it serves the page). From an older server without page ids, `c` is a made-up id and there's no secret.
+export const credsIn = (html) => { const m = String(html).match(/var BOARD = (\{[^\n]*\});\n/), b = m ? JSON.parse(m[1]) : {};
+  return { key: b.token, c: b.page || `pg${Math.random().toString(36).slice(2, 8)}`, secret: b.pageKey }; };
+// A page's write: JSON, its key, the board's own Origin (what a browser sends) and, for calls naming its page id, its secret.
+export const asPage = (key, origin, secret) => ({ "content-type": "application/json", ...(key ? { "x-sketchcall-key": key } : {}), ...(origin ? { origin } : {}),
+  ...(secret ? { "x-sketchcall-page": secret } : {}) });
 // The board server, started the way a person starts it; resolves once it answers.
 export async function serveBoard(dir, port) {
   // A server left on the port (a killed run) would answer for this board and the gate would test the wrong folder.
