@@ -5,10 +5,10 @@ import fs from "fs"; import puppeteer from "puppeteer";
 import { ok, sleep, cli as run, scratch, serveBoard, portArg, poll, settle, until, joined } from "./lib.mjs";
 const PORT = portArg(2, 4911), SHOTS = process.argv[3], D = scratch("tour"), U = `http://localhost:${PORT}/`;
 const cli = (...a) => run(D, ...a);
-const ev = () => fs.existsSync(`${D}/live/events.log`) ? fs.readFileSync(`${D}/live/events.log`, "utf8") : "";
+const ev = () => fs.existsSync(`${D}/.sketchcall/events.log`) ? fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8") : "";
 const tourLines = () => ev().split("\n").filter((l) => l.startsWith("TOUR: "));
 const WATCH = /COMMENT|BOARD|EDIT/;   // what a watcher greps events.log for
-const thread = () => fs.readFileSync(`${D}/live/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const thread = () => fs.readFileSync(`${D}/.sketchcall/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 const STEPS = { title: "How the test BOARD fits together", steps: [
   { target: "app", title: "Box A starts it", text: "Everything begins in box A. It takes the request and hands it on." },

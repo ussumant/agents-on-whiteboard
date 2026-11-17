@@ -8,8 +8,8 @@ import fs from "fs"; import puppeteer from "puppeteer";
 import { ok, sleep, cli as run, scratch, serveBoard, mcpSession, portArg, poll, settle, until, joined } from "./lib.mjs";
 const PORT = portArg(2, 4912), SHOTS = process.argv[3], D = scratch("presenter"), U = `http://localhost:${PORT}/`;
 const cli = (...a) => run(D, ...a);
-const ev = () => fs.existsSync(`${D}/live/events.log`) ? fs.readFileSync(`${D}/live/events.log`, "utf8") : "";
-const thread = () => fs.readFileSync(`${D}/live/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const ev = () => fs.existsSync(`${D}/.sketchcall/events.log`) ? fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8") : "";
+const thread = () => fs.readFileSync(`${D}/.sketchcall/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const answers = () => thread().filter((i) => i.kind === "op" && i.op === "answer");
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 

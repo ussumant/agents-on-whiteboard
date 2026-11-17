@@ -11,7 +11,7 @@ const open = async (q, w = 1280) => { const p = await b.newPage(); await p.setVi
   await p.goto(U + q, { waitUntil: "networkidle2" }); await p.waitForFunction("window.__board && window.__board.ready === true", { timeout: 30000 }); p.errs = errs; return p; };
 const scene = (p) => p.evaluate(() => __excalidrawAPI.getSceneElementsIncludingDeleted().map((e) => ({ id: e.id, v: e.version, del: !!e.isDeleted, x: Math.round(e.x), text: e.text, c: e.containerId })));
 const A = await open("");
-const srvScene = () => JSON.parse(fs.readFileSync(`${D}/live/scene.json`, "utf8")).elements;
+const srvScene = () => JSON.parse(fs.readFileSync(`${D}/.sketchcall/scene.json`, "utf8")).elements;
 await joined(A); await poll(async () => srvScene().length === (await scene(A)).length);   // A seeded the server
 const nA = (await scene(A)).length;
 ok(srvScene().length === nA, `1 the server holds the board A shows (${srvScene().length}/${nA})`);
@@ -51,11 +51,11 @@ ok((await A.evaluate(() => document.getElementById("conn").textContent)).include
 await B.screenshot({ path: `${D}/B-cursor.png` });
 // 8 Sam comments: named in the thread, events.log, and A's panel
 await B.evaluate(async () => { document.getElementById("box").value = "hi from Sam"; document.getElementById("send").click(); });
-await poll(() => /COMMENT by Sam: hi from Sam/.test(fs.readFileSync(`${D}/live/events.log`, "utf8")));
+await poll(() => /COMMENT by Sam: hi from Sam/.test(fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8")));
 await until(A, () => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "Sam")); await until(B, () => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "You"));
-const th = fs.readFileSync(`${D}/live/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const th = fs.readFileSync(`${D}/.sketchcall/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 ok(th.some((i) => i.kind === "comment" && i.author === "sam" && i.text === "hi from Sam"), "8 comment recorded with author sam");
-const ev = () => fs.existsSync(`${D}/live/events.log`) ? fs.readFileSync(`${D}/live/events.log`, "utf8") : "";
+const ev = () => fs.existsSync(`${D}/.sketchcall/events.log`) ? fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8") : "";
 ok(/COMMENT by Sam: hi from Sam/.test(ev()), "8b events.log names Sam");
 ok(await A.evaluate(() => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "Sam")), "8c A's panel shows the comment as Sam");
 ok(await B.evaluate(() => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "You")), "8d B's panel shows its own comment as You");
@@ -67,7 +67,7 @@ const boards = ev().split("\n").filter((l) => l.startsWith("BOARD")).slice(befor
 ok(boards.length === 1 && /^BOARD: Sam changed \S+ to "Sam was here"$/.test(boards[0]), `9 one named BOARD line for live typing ${JSON.stringify(boards)}`);
 ok(!/a note from Claude/.test(ev()), "9b Claude's note never logged as someone's writing");
 // 10 a probe page never writes
-const v0 = fs.statSync(`${D}/live/scene.json`).mtimeMs; const P = await open("?probe=1");
+const v0 = fs.statSync(`${D}/.sketchcall/scene.json`).mtimeMs; const P = await open("?probe=1");
 await P.evaluate((id) => __board.setLabel(id, "probe edit"), `${b1}__title`); await sleep(1500);
 ok(!srvScene().some((e) => e.text === "probe edit"), "10 ?probe edits stay out of the server");
 // 11 a third tab with A's localStorage: still no duplicates
@@ -116,9 +116,9 @@ await A.evaluate(async (b64) => { const bin = Uint8Array.from(atob(b64), (c) => 
 // a pasted image exists before Excalidraw gives it a fileId (slower under load): wait for the id, then for the file
 await until(A, () => __excalidrawAPI.getSceneElements().some((x) => x.type === "image" && x.fileId));
 const pic = await A.evaluate(() => { const e = __excalidrawAPI.getSceneElements().find((x) => x.type === "image" && x.fileId); return e ? { id: e.id, fileId: e.fileId } : null; });
-await poll(() => pic && fs.readdirSync(`${D}/live/files`).some((n) => n.startsWith(pic.fileId + ".")));
+await poll(() => pic && fs.readdirSync(`${D}/.sketchcall/files`).some((n) => n.startsWith(pic.fileId + ".")));
 const hasPic = (p) => p.evaluate((f) => !!__excalidrawAPI.getFiles()[f], pic && pic.fileId);
-ok(!!pic && fs.existsSync(`${D}/live/files`) && fs.readdirSync(`${D}/live/files`).some((n) => n.startsWith(pic.fileId + ".")), `17 A's pasted picture is saved on the server (${pic && pic.fileId})`);
+ok(!!pic && fs.existsSync(`${D}/.sketchcall/files`) && fs.readdirSync(`${D}/.sketchcall/files`).some((n) => n.startsWith(pic.fileId + ".")), `17 A's pasted picture is saved on the server (${pic && pic.fileId})`);
 // B learns of the picture from the server's "files" event after the upload lands: polled, up to 15 s
 const bHas = (await poll(() => pic && hasPic(B))) >= 0;
 ok(!!pic && bHas, "17b B shows it");
@@ -129,7 +129,7 @@ const back = await A.waitForFunction("window.__board && window.__board.ready ===
 await poll(() => hasPic(A));
 ok(!!back && !!pic && await hasPic(A), "17d A still has it after a reload");
 await fetch(U + "api/comment", { method: "POST", headers: asPage(await pageKey(U), U.slice(0, -1)), body: JSON.stringify({ text: "about the picture", on: pic && { id: pic.id, label: "area: image" } }) }); await sleep(300);
-ok(/\[pictures: live\/files\/\w+\.png\]/.test(fs.readFileSync(`${D}/live/events.log`, "utf8").trim().split("\n").filter((l) => l.startsWith("COMMENT")).at(-1) || ""), "17e a comment on it names the saved file");
+ok(/\[pictures: \.sketchcall\/files\/\w+\.png\]/.test(fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8").trim().split("\n").filter((l) => l.startsWith("COMMENT")).at(-1) || ""), "17e a comment on it names the saved file");
 // 18 what a person draws with each of Excalidraw's tools is saved and reaches the other page. The server checks every
 // element's shape by type, and a shape it wrongly refused would never save or sync, so each tool is drawn with the mouse.
 // A stroke the synthetic mouse loses (the editor still busy with the last one) is drawn again until it is on A: then a

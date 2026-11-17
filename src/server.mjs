@@ -1,13 +1,15 @@
 // The board server and the record of the call. A person comments on an Excalidraw board in the browser; their coding agent
 // answers on it (through the CLI in bin/sketchcall.mjs or the MCP tools in src/mcp.mjs), like a screen-share call.
 //
-// A board is a folder holding one .excalidraw file. The call lives in its live/ subfolder:
-//   live/thread.jsonl   the record: every comment, reply and op, one JSON line each
-//   live/events.log     one line per comment, per text someone writes or changes on the canvas, per picture and per
-//                       tour move: what an agent watches
-//   live/scene.json     the board as everyone sees it now (the .excalidraw file is only where it started)
-//   live/files/         pictures pasted on the board, one image file each
-//   live/share.json     the share link's key, only while `share` runs
+// A board is a folder holding one .excalidraw file. The call lives in its .sketchcall/ subfolder (CALL below):
+//   thread.jsonl   the record: every comment, reply and op, one JSON line each
+//   events.log     one line per comment, per text someone writes or changes on the canvas, per picture and per tour
+//                  move: what a person (or a grep) reads
+//   canvas.jsonl   the canvas writing as records, which `wait`, board_wait and the channel push read
+//   scene.json     the board as everyone sees it now (the .excalidraw file is only where it started)
+//   files/         pictures pasted on the board, one image file each
+//   board.json     which .excalidraw file the call started from; server.json the running server; share.json the
+//                  share link's key, only while `share` runs
 // Multiplayer: the server holds the scene. Pages load it, send only the elements they changed, and get everyone else's
 // changes and cursors by long-polling /api/changes. Per element, the higher `version` wins.
 import http from 'node:http';
@@ -15,10 +17,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 
+// The name people see: the command, the page title, the MCP server, the call's folder. A rename changes it here and in
+// package.json, the plugin files and the README.
+export const NAME = 'sketchcall';
+export const CALL = `.${NAME}`;
 export const DEFAULT_PORT = 4900;
 const PAGE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'board.html');
+const BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', `${NAME}.mjs`);
 
 // Text a person sent, kept on one line wherever it goes into a line of its own (events.log, a channel message): no control
 // characters, no line or paragraph separators, no bidi overrides. Each could start a forged line, or flip how a line reads.
@@ -87,10 +95,10 @@ const loadable = e => !!e && typeof e === 'object' && typeof e.id === 'string' &
   && (e.version === undefined || (Number.isFinite(e.version) && e.version < 1e9)) && shapeOk(e);
 
 // The record helpers, shared with mcp.mjs so both write exactly the same lines. `dir` is the board folder.
-// live/canvas.jsonl: the BOARD events as records ({id, ts, author, via, key, el, text, change}), which the MCP server pushes
-// from, never by reading the words of a log line back.
-export const files = dir => ({ live: path.join(dir, 'live'), thread: path.join(dir, 'live', 'thread.jsonl'), canvas: path.join(dir, 'live', 'canvas.jsonl'),
-  events: path.join(dir, 'live', 'events.log'), scene: path.join(dir, 'live', 'scene.json'), share: path.join(dir, 'live', 'share.json') });
+// canvas.jsonl holds the BOARD events as records ({id, ts, author, via, key, el, text, change}), which the MCP server
+// pushes from, never by reading the words of a log line back.
+export const files = dir => { const live = path.join(dir, CALL); return { live, thread: path.join(live, 'thread.jsonl'), canvas: path.join(live, 'canvas.jsonl'),
+  events: path.join(live, 'events.log'), scene: path.join(live, 'scene.json'), share: path.join(live, 'share.json'), server: path.join(live, 'server.json'), board: path.join(live, 'board.json') }; };
 const now = () => new Date().toISOString();
 const nextId = p => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 export const append = (dir, item) => { fs.mkdirSync(files(dir).live, { recursive: true }); fs.appendFileSync(files(dir).thread, JSON.stringify(item) + '\n'); return item; };
@@ -250,7 +258,38 @@ export function readBoard(file) {
 // A folder this CLI can write a record into: it already has a call, or a board to start one from.
 export const isBoard = dir => fs.existsSync(files(dir).live) || fs.readdirSync(dir).some(f => f.endsWith('.excalidraw'));
 
-// Pictures from an .excalidraw file's `files` (a board's Export carries the tab's pictures) into live/files: each one an
+// Start a board's server, or find it already running: what `open` and board_open both do. The server runs detached, so
+// the board outlives the command or the agent session; `stop` ends it. A server is this board's when its /api/hello
+// names this folder (it tells only this computer). With `pick`, the first port from 4900 to 4919 that is free or
+// already this board's.
+const helloAt = port => fetch(`http://127.0.0.1:${port}/api/hello`, { signal: AbortSignal.timeout(1500) }).then(r => r.json()).catch(() => null);
+const portTaken = port => new Promise(done => { const c = net.createConnection({ port, host: '127.0.0.1' }, () => { c.destroy(); done(true); }); c.on('error', () => done(false)); });
+export async function startBoard({ dir, seed, port = DEFAULT_PORT, pick = false }) {
+  const real = fs.realpathSync(dir), ports = pick ? Array.from({ length: 20 }, (_, i) => DEFAULT_PORT + i) : [port];
+  for (const p of ports) {
+    const h = await helloAt(p), url = `http://localhost:${p}/`;
+    if (h && h.dir && fs.realpathSync(h.dir) === real) return { url, port: p, started: false };
+    if (h || await portTaken(p)) { if (pick) continue; throw new Error(`port ${p} already serves ${h ? 'a different board' : 'something else'}; pass another port`); }
+    fs.mkdirSync(files(dir).live, { recursive: true });
+    const log = fs.openSync(path.join(files(dir).live, 'server.log'), 'a');
+    spawn(process.execPath, [BIN, 'serve', '--dir', dir, '--port', String(p), ...(seed ? ['--seed', seed] : [])], { cwd: dir, detached: true, stdio: ['ignore', log, log] }).unref();
+    for (let i = 0; i < 40; i++) { const x = await helloAt(p); if (x && x.dir && fs.realpathSync(x.dir) === real) return { url, port: p, started: true }; await new Promise(r => setTimeout(r, 150)); }
+    throw new Error(`the board server did not start on ${p}; see ${path.join(files(dir).live, 'server.log')}`);
+  }
+  throw new Error(`ports ${DEFAULT_PORT}–${DEFAULT_PORT + 19} are all taken: pass --port`);
+}
+// Stop this board's server: the process in server.json, once its port answers for this folder (a pid alone could be
+// another program's by now).
+export async function stopBoard({ dir }) {
+  let s; try { s = JSON.parse(fs.readFileSync(files(dir).server, 'utf8')); } catch { return { stopped: false, why: 'no server is running for this board' }; }
+  const h = await helloAt(s.port);
+  if (!(h && h.dir && fs.realpathSync(h.dir) === fs.realpathSync(dir))) { try { fs.unlinkSync(files(dir).server); } catch {} return { stopped: false, why: 'its server had already stopped' }; }
+  process.kill(s.pid, 'SIGTERM');
+  for (let i = 0; i < 40 && await helloAt(s.port); i++) await new Promise(r => setTimeout(r, 100));
+  return { stopped: true, port: s.port };
+}
+
+// Pictures from an .excalidraw file's `files` (a board's Export carries the tab's pictures) into the call's files/: each one an
 // element on the board uses and the server lacks.
 // No SVG: it can carry script, which runs if someone opens the file itself.
 const PIC_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
@@ -260,7 +299,7 @@ function savePictures(dir, list, used) {
   for (const f of Object.values(list || {})) {
     const m = String(f && f.dataURL || '').match(/^data:([\w/+.-]+);base64,(.+)$/);
     if (!m || !PIC_TYPES[m[1]] || !used.has(f.id) || saved.includes(f.id) || !/^[\w-]{1,128}$/.test(f.id)) continue;
-    fs.mkdirSync(pics, { recursive: true }); fs.writeFileSync(path.join(pics, `${f.id}.${PIC_TYPES[m[1]]}`), Buffer.from(m[2], 'base64')); took.push(`live/files/${f.id}.${PIC_TYPES[m[1]]}`);
+    fs.mkdirSync(pics, { recursive: true }); fs.writeFileSync(path.join(pics, `${f.id}.${PIC_TYPES[m[1]]}`), Buffer.from(m[2], 'base64')); took.push(`${CALL}/files/${f.id}.${PIC_TYPES[m[1]]}`);
   }
   return took;
 }
@@ -270,7 +309,7 @@ export function importFiles(dir, file) {
 }
 
 // The board's record as Markdown: every comment word for word, in order, the reply to each, and the pictures it was
-// left on, straight from live/thread.jsonl.
+// left on, straight from thread.jsonl.
 // Only this code writes the record's structure: the headings and the time, author and reply lines. A comment's or a
 // reply's text goes in as a quote, every line of it, with HTML escaped and a leading # escaped, so a commenter's
 // "## 7. …" or "**Host:** Approved" stays inside their own quote and can't read as an entry or a reply.
@@ -284,8 +323,8 @@ export function record(dir) {
   const saved = fs.existsSync(PICS) ? fs.readdirSync(PICS) : [];
   const pics = c => [c.on && c.on.id, ...((c.on && c.on.ids) || [])].filter(Boolean)
     .map(id => els.find(e => e.id === id && e.type === 'image' && !e.isDeleted)).filter(Boolean)
-    .map(e => { const f = saved.find(n => n.startsWith(e.fileId + '.')); return f ? `![picture](live/files/${f})` : null; }).filter(Boolean);
-  const out = ['# The board\'s record', '', `> Every comment on this board, word for word, from \`live/thread.jsonl\`. ${items.length} comments.`, ''];
+    .map(e => { const f = saved.find(n => n.startsWith(e.fileId + '.')); return f ? `![picture](${CALL}/files/${f})` : null; }).filter(Boolean);
+  const out = ['# The board\'s record', '', `> Every comment on this board, word for word, from \`${CALL}/thread.jsonl\`. ${items.length} comments.`, ''];
   let n = 0;
   items.forEach((c, i) => {
     if (c.author === 'claude') return;
@@ -336,11 +375,12 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
     b.elements.forEach(load);
     savePictures(DIR, b.files, new Set(b.elements.filter(e => e && e.type === 'image' && !e.isDeleted).map(e => e.fileId)));
     fs.writeFileSync(SCENE, JSON.stringify({ elements: [...els.values()] }));
+    fs.writeFileSync(files(DIR).board, JSON.stringify({ file: path.basename(start), started: now() }));   // one call per folder: `open` checks it
   }
   // The page, with this board's name and storage key in it (a hash of the folder, so two boards never share a browser's
   // copy). JSON with < escaped, so a file name can't close the script.
   const BOARD = { key: crypto.createHash('sha1').update(fs.realpathSync(DIR)).digest('hex').slice(0, 12),
-    name: start ? path.basename(start, '.excalidraw') : path.basename(DIR) };
+    name: start ? path.basename(start, '.excalidraw') : path.basename(DIR), app: NAME };
   // The write keys, new each run. A page gets one in its HTML, and sends it with every write; another website can't read
   // the page (no CORS), so it can't send it. A page that came through the share link gets a different key from a page on
   // this computer, so one can't stand in for the other.
@@ -493,7 +533,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       if (url.pathname === '/favicon.ico') { res.writeHead(204); return res.end(); }
       // Pictures people paste. An image element carries only a fileId; Excalidraw keeps the pixels in the page, so a
       // pasted screenshot would live in one tab's memory and be gone on reload. The page that has a picture sends it
-      // here once; it is kept as a plain image file in live/files, and any page missing it (or the agent) reads it back.
+      // here once; it is kept as a plain image file in the call's files/, and any page missing it (or the agent) reads it back.
       if (req.method === 'POST' && url.pathname === '/api/files') {
         const { files: list, c, name } = await json(req, 30e6), took = [];
         if (c != null && notMine(c)) return;
@@ -507,7 +547,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
           fs.writeFileSync(path.join(PICS, `${f.id}.${PIC_EXT[m[1]]}`), pic);
           n++; bytes += pic.length; took.push(f.id);
         }
-        if (took.length) { broadcast('files', { ids: took }, c ?? null); fs.appendFileSync(EVENTS, `IMAGE: ${quiet(shown(authorOf(name, far)))}${far ? ' via link' : ''} added ${took.map(id => `live/files/${path.basename(picOf(id))}`).join(', ')}\n`); }
+        if (took.length) { broadcast('files', { ids: took }, c ?? null); fs.appendFileSync(EVENTS, `IMAGE: ${quiet(shown(authorOf(name, far)))}${far ? ' via link' : ''} added ${took.map(id => `${CALL}/files/${path.basename(picOf(id))}`).join(', ')}\n`); }
         return send(res, 200, { ok: true, took });
       }
       if (req.method === 'GET' && url.pathname === '/api/files') {
@@ -555,7 +595,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         const item = appended(append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(far ? { via: 'link' } : {}) }), far);
         // A comment on a pasted picture names its saved file, so the agent can open the picture it is about.
         const pics = [...new Set([on && on.id, ...((on && on.ids) || [])])].map(id => els.get(id)).filter(e => e && e.type === 'image' && !e.isDeleted).map(e => picOf(e.fileId)).filter(Boolean);
-        fs.appendFileSync(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => 'live/files/' + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
+        fs.appendFileSync(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => `${CALL}/files/` + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
         return send(res, 200, item);
       }
       if (req.method === 'GET' && url.pathname === '/api/scene') return send(res, 200, { elements: [...els.values()] });
@@ -606,12 +646,17 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
     } catch (e) { if (!e.status) console.error('ERROR', e.message); if (!res.headersSent) send(res, e.status || 500, { error: e.message }, 'application/json', e.status === 413 ? { connection: 'close' } : {}); }
   });
   server.on('error', e => { console.error(e.code === 'EADDRINUSE' ? `port ${port} is taken: pass --port <another>` : e.message); process.exit(1); });
-  server.listen(port, '127.0.0.1', () => console.log(`board on http://localhost:${port} (only this computer can reach it)`));
+  // server.json says which process serves this call, so `stop` can stop it; it goes when the server does.
+  const SERVER = files(DIR).server, gone = () => { try { if (JSON.parse(fs.readFileSync(SERVER, 'utf8')).pid === process.pid) fs.unlinkSync(SERVER); } catch { /* not ours */ } };
+  // (A signal ends the server only when nothing else listens for it: `share` runs this server in its own process and
+  // must close its link first.)
+  process.on('exit', gone); for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(sig, () => { if (process.listenerCount(sig) === 1) process.exit(0); });
+  server.listen(port, '127.0.0.1', () => { fs.writeFileSync(SERVER, JSON.stringify({ pid: process.pid, port, started: now() })); console.log(`board on http://localhost:${port} (only this computer can reach it)`); });
   return server;
 }
 
 // Open the running board to teammates: a Cloudflare quick tunnel (no account, a random trycloudflare.com name) plus a
-// fresh secret key. The key lives in live/share.json only while this process runs; the server checks that this process
+// fresh secret key. The key lives in share.json only while this process runs; the server checks that this process
 // is alive, so a killed share closes the door even if the tunnel lingers.
 // share.json holds the link's key: readable by its owner only, even where an older copy was looser.
 export function writeShare(file, data) { fs.writeFileSync(file, JSON.stringify(data), { mode: 0o600 }); fs.chmodSync(file, 0o600); }
@@ -638,7 +683,7 @@ export async function share({ dir, port = DEFAULT_PORT } = {}) {
     printed = true;
     const link = `${m[0]}/?k=${key}`;
     writeShare(SHARE, { key, pid: process.pid, port, started: now(), url: m[0] });
-    console.log(`share link: ${link}\nAnyone with this link can see and edit the board until you stop this (Ctrl-C, or sketchcall unshare).`);
+    console.log(`share link: ${link}\nAnyone with this link can see and edit the board until you stop this (Ctrl-C, or ${NAME} unshare).`);
   };
   cf.stdout.on('data', look); cf.stderr.on('data', look);
 }

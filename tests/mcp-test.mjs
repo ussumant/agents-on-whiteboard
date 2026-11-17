@@ -30,6 +30,11 @@ try {
   const names = (await B.rpc("tools/list", {})).result.tools.map((t) => t.name);
   const want = ["board_open", "board_say", "board_focus", "board_note", "board_arrow", "board_edit", "board_delete", "board_tour", "board_tour_step", "board_point", "board_wait", "board_thread"];
   ok(want.every((n) => names.includes(n)), `2b tools/list has the board tools (${names.join(", ")})`);
+  // every string the agent reads is filled in: no \${…} left from a string that should have been a template, in either mode
+  const C0 = mcpSession(["--channels"]); sessions.push(C0);
+  const iC0 = (await C0.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "mcp-test", version: "0" } })).result, tC0 = (await C0.rpc("tools/list", {})).result.tools;
+  const texts = [iB.instructions, iC0.instructions, ...(await B.rpc("tools/list", {})).result.tools.map((t) => t.description), ...tC0.map((t) => t.description)];
+  ok(texts.every((t) => !t.includes("${")), `2c no unfilled \${…} in the instructions or tool descriptions (${texts.filter((t) => t.includes("\${")).map((t) => t.slice(0, 50))})`);
 
   // 3 board_open starts sketchcall's own server for the folder, on the port given
   const o = await A.call("board_open", { dir: D, port: PORT });

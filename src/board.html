@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>sketchcall</title>
+<title>board</title>
 
 <script>
 /* Runs synchronously, before anything else — including the three blocking
@@ -17,7 +17,7 @@
   var BOARD = "__SKETCHCALL_BOARD__";
   if (!BOARD || typeof BOARD !== "object") BOARD = { key: "local", name: "board" };
   window.__boardInfo = BOARD;
-  document.title = BOARD.name + " · sketchcall";
+  document.title = BOARD.app ? BOARD.name + " · " + BOARD.app : BOARD.name;   // the app's name comes from the server
   window.PERSISTENCE_KEY = "sketchcall:" + BOARD.key;
   window.__BOARD_ELEMENTS_KEY = window.PERSISTENCE_KEY + ":elements";
   window.__BOARD_APPSTATE_KEY = window.PERSISTENCE_KEY + ":appstate";

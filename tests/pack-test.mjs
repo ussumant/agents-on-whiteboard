@@ -23,6 +23,6 @@ ok(pkg.bin && pkg.bin.sketchcall === "bin/sketchcall.mjs" && /^>=\s*20/.test((pk
 ok(pkg.license === "MIT" && fs.readFileSync(path.join(ROOT, "LICENSE"), "utf8").startsWith("MIT License"), "2c MIT licence");
 
 const help = execFileSync(process.execPath, [path.join(ROOT, "bin/sketchcall.mjs"), "--help"], { encoding: "utf8" });
-const COMMANDS = ["serve", "share", "unshare", "record", "import-files", "wait", "mcp", "say", "op", "point", "tour", "tour-step"];
+const COMMANDS = ["open", "stop", "serve", "share", "unshare", "record", "import-files", "wait", "mcp", "say", "op", "point", "tour", "tour-step"];
 const absent = COMMANDS.filter((c) => !new RegExp(`^  ${c}\\b`, "m").test(help));
 ok(!absent.length, `3 --help lists every command${absent.length ? ` (missing: ${absent})` : ""}`);

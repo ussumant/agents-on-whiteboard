@@ -1,6 +1,6 @@
 // Security gate: one named check per finding in the pre-release security review (C1, H1–H3, M1–M6, L1–L7). Each one
 // replays the finding's proof against a fresh copy of the sample board and expects it to fail now: a 403, an escaped
-// string, no crash, no row in the record. A link guest is simulated the way the review did it: a live/share.json holding
+// string, no crash, no row in the record. A link guest is simulated the way the review did it: a share.json holding
 // a known key and this process's pid, plus a trycloudflare.com Host, a cf-connecting-ip header and the key cookie.
 //   node tests/security-test.mjs [spare port 4900–4940] [second] [third]      → PASS lines
 import fs from "node:fs"; import http from "node:http"; import path from "node:path"; import os from "node:os";
@@ -238,7 +238,7 @@ if (opened.err) console.log("board_open:", opened.text);
   stopPort(PORT3);
   const D5 = scratch("security-m4b"), errs = [];
   for (const port of ["share", 80, 4900.5, 70000]) { const x = await M.call("board_open", { dir: D5, port }); errs.push(x.err && /1024/.test(x.text)); }
-  ok(errs.every(Boolean) && !fs.existsSync(path.join(D5, "live", "server.log")), `M4b ports "share", 80, 4900.5 and 70000 are refused before anything starts (${JSON.stringify(errs)})`);
+  ok(errs.every(Boolean) && !fs.existsSync(path.join(S.files(D5).live, "server.log")), `M4b ports "share", 80, 4900.5 and 70000 are refused before anything starts (${JSON.stringify(errs)})`);
 }
 
 /* The page itself: C1 on an old record, L1's badge, L6, and every write carrying the key */
