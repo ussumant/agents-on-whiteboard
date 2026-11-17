@@ -2,7 +2,7 @@
 // sample board, on a spare port. It edits, deletes and posts comments, so it never runs on a real board.
 //   node tests/mp-test.mjs [spare port 4900–4940]      → 34 PASS lines
 import fs from "fs"; import puppeteer from "puppeteer";
-import { ok, sleep, cli, scratch, serveBoard, portArg } from "./lib.mjs";
+import { ok, sleep, cli, scratch, serveBoard, portArg, poll, until, joined } from "./lib.mjs";
 const PORT = portArg(2, 4910), D = scratch("mp"), U = `http://localhost:${PORT}/`;
 const srv = await serveBoard(D, PORT);
 const b = await puppeteer.launch({ headless: true });
@@ -10,8 +10,8 @@ const open = async (q, w = 1280) => { const p = await b.newPage(); await p.setVi
   await p.goto(U + q, { waitUntil: "networkidle2" }); await p.waitForFunction("window.__board && window.__board.ready === true", { timeout: 30000 }); p.errs = errs; return p; };
 const scene = (p) => p.evaluate(() => __excalidrawAPI.getSceneElementsIncludingDeleted().map((e) => ({ id: e.id, v: e.version, del: !!e.isDeleted, x: Math.round(e.x), text: e.text, c: e.containerId })));
 const A = await open("");
-await sleep(1500);
 const srvScene = () => JSON.parse(fs.readFileSync(`${D}/live/scene.json`, "utf8")).elements;
+await joined(A); await poll(async () => srvScene().length === (await scene(A)).length);   // A seeded the server
 const nA = (await scene(A)).length;
 ok(srvScene().length === nA, `1 the server holds the board A shows (${srvScene().length}/${nA})`);
 const B = await open("?name=Sam", 1000);
@@ -26,19 +26,23 @@ ok((await scene(B)).find((e) => e.id === `${b1}__title`)?.text === "edited by A"
 // 4 concurrent moves on different boxes
 const move = (p, id) => p.evaluate((id) => { const api = __excalidrawAPI; api.updateScene({ elements: api.getSceneElementsIncludingDeleted().map((e) => e.id === id ? ExcalidrawLib.newElementWith(e, { x: e.x + 77 }) : e) }); }, id);
 const x0 = (await scene(A)).filter((e) => e.id === b1 || e.id === b2).map((e) => e.x);
-await Promise.all([move(A, b1), move(B, b2)]); await sleep(1500);
+await Promise.all([move(A, b1), move(B, b2)]);
+for (const p of [A, B]) await poll(async () => { const s = await scene(p); return s.find((e) => e.id === b1).x === x0[0] + 77 && s.find((e) => e.id === b2).x === x0[1] + 77; });
 for (const [n, p] of [["A", A], ["B", B]]) { const s = await scene(p); ok(s.find((e) => e.id === b1).x === x0[0] + 77 && s.find((e) => e.id === b2).x === x0[1] + 77, `4 both concurrent moves survive in ${n}`); }
 // 5 delete in B shows in A
 await B.evaluate((id) => { const api = __excalidrawAPI; api.updateScene({ elements: api.getSceneElementsIncludingDeleted().map((e) => e.id === id ? ExcalidrawLib.newElementWith(e, { isDeleted: true }) : e) }); }, b2);
-await sleep(1200);
+await poll(async () => (await scene(A)).find((e) => e.id === b2).del);
 ok((await scene(A)).find((e) => e.id === b2).del, "5 B's delete shows in A");
 // 6 Claude note via the CLI: one label, on both pages and the server
 cli(D, "op", JSON.stringify({ op: "note", ref: "n_mp", x: 0, y: -400, text: "a note from Claude" }));
-await sleep(3500);
+const hasLabel = (s) => s.some((e) => e.id === "n_mp__label" && !(e.del || e.isDeleted));
+await poll(async () => hasLabel(await scene(A)) && hasLabel(await scene(B)) && hasLabel(srvScene())); await sleep(3500);   // it's in; then time for a second, wrong one
 for (const [n, s] of [["A", await scene(A)], ["B", await scene(B)], ["server", srvScene().map((e) => ({ ...e, c: e.containerId, del: e.isDeleted }))]]) {
   const labs = s.filter((e) => e.c === "n_mp" && !e.del); ok(labs.length === 1 && labs[0].id === "n_mp__label", `6 Claude's note has exactly one label in ${n} (${labs.map((l) => l.id)})`); }
 // 7 presence: A moves the pointer, B sees a named cursor
-await A.mouse.move(400, 400); await A.mouse.move(420, 430); await sleep(800);
+await A.mouse.move(400, 400); await A.mouse.move(420, 430);
+await until(B, () => [...__excalidrawAPI.getAppState().collaborators.values()].some((c) => c.username === "Host" && c.pointer) && __board.peers().includes("Host"));
+await until(A, () => __board.peers().includes("Sam") && document.getElementById("conn").textContent.includes("Sam"));
 const col = await B.evaluate(() => [...__excalidrawAPI.getAppState().collaborators.values()].map((c) => ({ n: c.username, p: !!c.pointer })));
 ok(col.some((c) => c.n === "Host" && c.p), `7 B sees the host's cursor, named Host ${JSON.stringify(col)}`);
 ok((await B.evaluate(() => __board.peers())).includes("Host") && (await A.evaluate(() => __board.peers())).includes("Sam"), "7b each page lists the other in the room");
@@ -46,7 +50,8 @@ ok((await A.evaluate(() => document.getElementById("conn").textContent)).include
 await B.screenshot({ path: `${D}/B-cursor.png` });
 // 8 Sam comments: named in the thread, events.log, and A's panel
 await B.evaluate(async () => { document.getElementById("box").value = "hi from Sam"; document.getElementById("send").click(); });
-await sleep(2200);
+await poll(() => /COMMENT by Sam: hi from Sam/.test(fs.readFileSync(`${D}/live/events.log`, "utf8")));
+await until(A, () => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "Sam")); await until(B, () => [...document.querySelectorAll(".msg .meta b")].some((b) => b.textContent === "You"));
 const th = fs.readFileSync(`${D}/live/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 ok(th.some((i) => i.kind === "comment" && i.author === "sam" && i.text === "hi from Sam"), "8 comment recorded with author sam");
 const ev = () => fs.existsSync(`${D}/live/events.log`) ? fs.readFileSync(`${D}/live/events.log`, "utf8") : "";
@@ -56,7 +61,7 @@ ok(await B.evaluate(() => [...document.querySelectorAll(".msg .meta b")].some((b
 // 9 Sam types on the board: exactly one BOARD line, named, after the pause
 const before = ev().split("\n").filter((l) => l.startsWith("BOARD")).length;
 for (const t of ["S", "Sa", "Sam", "Sam was here"]) { await B.evaluate((id, t) => __board.setLabel(id, t), `${ids[2]}__title`, t); await sleep(150); }
-await sleep(3200);
+await poll(() => ev().split("\n").filter((l) => l.startsWith("BOARD")).length > before); await sleep(1000);   // then time for a second, wrong one
 const boards = ev().split("\n").filter((l) => l.startsWith("BOARD")).slice(before);
 ok(boards.length === 1 && /^BOARD: Sam changed \S+ to "Sam was here"$/.test(boards[0]), `9 one named BOARD line for live typing ${JSON.stringify(boards)}`);
 ok(!/a note from Claude/.test(ev()), "9b Claude's note never logged as someone's writing");
@@ -71,26 +76,29 @@ ok(await A.evaluate(() => !document.getElementById("resetBtn")), "12 no Reset on
 for (const [n, p] of [["A", A], ["B", B], ["C", C]]) ok(!p.errs.length, `13 no console errors in ${n} ${JSON.stringify(p.errs.slice(0, 3))}`);
 // 14 a new page replays the thread, but Claude's old edit must not put back text a person typed after it
 cli(D, "op", JSON.stringify({ op: "edit", target: ids[3], text: "Claude's title" }));
-await sleep(2500);
-await B.evaluate((id) => __board.setLabel(id, "Sam retyped it"), `${ids[3]}__title`); await sleep(1500);
-const N = await open("?name=Nina"); await sleep(3500);
 const t14 = (s) => s.find((e) => e.id === `${ids[3]}__title`)?.text;
+for (const p of [A, B]) await poll(async () => t14(await scene(p)) === "Claude's title");
+await B.evaluate((id) => __board.setLabel(id, "Sam retyped it"), `${ids[3]}__title`);
+await poll(async () => t14(srvScene()) === "Sam retyped it" && t14(await scene(A)) === "Sam retyped it");
+const N = await open("?name=Nina"); await joined(N); await sleep(3500);   // then time for a wrong replay
 ok(t14(await scene(N)) === "Sam retyped it" && t14(await scene(A)) === "Sam retyped it" && t14(srvScene()) === "Sam retyped it", `14 a joining page doesn't replay Claude's edit over Sam's (${t14(srvScene())})`);
 // 15 undo never takes back someone else's change; your next own change still undoes
 const xA = () => A.evaluate((id) => Math.round(__excalidrawAPI.getSceneElements().find((e) => e.id === id).x), ids[4]);
 const moveA = () => A.evaluate((id) => { const api = __excalidrawAPI; api.updateScene({ elements: api.getSceneElementsIncludingDeleted().map((e) => e.id === id ? ExcalidrawLib.newElementWith(e, { x: e.x + 50 }) : e), commitToHistory: true }); }, ids[4]);
 const undoA = () => A.evaluate(() => document.querySelector('[aria-label="Undo"]').click());
-await moveA(); await sleep(600);
-await B.evaluate((id) => __board.setLabel(id, "Sam, before the host's undo"), `${ids[5]}__title`); await sleep(1500);
-await undoA(); await sleep(1800);
-const t15 = (s) => s.find((e) => e.id === `${ids[5]}__title`)?.text;
+const t15 = (s) => s.find((e) => e.id === `${ids[5]}__title`)?.text, xSrv = () => Math.round(srvScene().find((e) => e.id === ids[4]).x);
+const xB = () => B.evaluate((id) => Math.round(__excalidrawAPI.getSceneElements().find((e) => e.id === id).x), ids[4]);
+const x15a = await xA(); await moveA(); await poll(() => xSrv() === x15a + 50);
+await B.evaluate((id) => __board.setLabel(id, "Sam, before the host's undo"), `${ids[5]}__title`);
+await poll(async () => t15(await scene(A)) === "Sam, before the host's undo" && t15(srvScene()) === "Sam, before the host's undo");   // Sam's edit is on the host's page
+await undoA(); await poll(async () => xSrv() === x15a && (await xB()) === x15a);   // the host's undo has reached the server and Sam
 ok(t15(await scene(A)) === "Sam, before the host's undo" && t15(await scene(B)) === "Sam, before the host's undo" && t15(srvScene()) === "Sam, before the host's undo", "15 the host's undo leaves Sam's edit alone everywhere");
-const x15 = await xA(); await moveA(); await sleep(600); await undoA(); await sleep(1500);
+const x15 = await xA(); await moveA(); await poll(() => xSrv() === x15 + 50); await undoA(); await poll(() => xSrv() === x15);
 ok((await xA()) === x15 && t15(srvScene()) === "Sam, before the host's undo", "15b the host's next own change still undoes");
 // 16 Claude's arrow runs edge to edge and lies under the boxes: a box the line crosses still takes the click, on both pages
 // the sample board has six boxes (ids[0]…ids[5]); the arrow runs from the last one to the first
 cli(D, "op", JSON.stringify({ op: "arrow", ref: "arr_mp", from: ids[5], to: ids[0], label: "crosses" }));
-await sleep(3500);
+for (const p of [A, B]) await until(p, () => __excalidrawAPI.getSceneElements().some((e) => e.id === "arr_mp"));
 const zOf = (p) => p.evaluate(() => { const els = __excalidrawAPI.getSceneElements(), i = (id) => els.findIndex((e) => e.id === id); return { arrow: i("arr_mp"), firstBox: Math.min(...__board.boxes().map(i).filter((n) => n >= 0)) }; });
 const [zA, zB] = [await zOf(A), await zOf(B)];
 ok(zA.arrow >= 0 && zA.arrow < zA.firstBox && zB.arrow >= 0 && zB.arrow < zB.firstBox, `16 Claude's arrow is under the boxes on A and B ${JSON.stringify([zA, zB])}`);
@@ -112,11 +120,11 @@ ok(!!pic && fs.existsSync(`${D}/live/files`) && fs.readdirSync(`${D}/live/files`
 // B learns of the picture from the server's "files" event after the upload lands: give it up to 8 s, polled
 let bHas = false; for (let i = 0; i < 32 && pic && !(bHas = await hasPic(B)); i++) await sleep(250);
 ok(!!pic && bHas, "17b B shows it");
-const Late = await open("?name=Late"); await sleep(2000);
+const Late = await open("?name=Late"); await poll(() => hasPic(Late));
 ok(!!pic && await hasPic(Late), "17c a page that joins later shows it");
 await A.reload({ waitUntil: "load" });
 const back = await A.waitForFunction("window.__board && window.__board.ready === true", { timeout: 30000, polling: 500 }).then(() => true, async () => console.log("A after reload:", await A.evaluate(() => JSON.stringify(window.__board && { ready: window.__board.ready, error: window.__board.error }))));
-await sleep(2000);
+await poll(() => hasPic(A));
 ok(!!back && !!pic && await hasPic(A), "17d A still has it after a reload");
 await fetch(U + "api/comment", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "about the picture", on: pic && { id: pic.id, label: "area: image" } }) }); await sleep(300);
 ok(/\[pictures: live\/files\/\w+\.png\]/.test(fs.readFileSync(`${D}/live/events.log`, "utf8").trim().split("\n").filter((l) => l.startsWith("COMMENT")).at(-1) || ""), "17e a comment on it names the saved file");

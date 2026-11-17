@@ -10,6 +10,25 @@ export const BIN = path.join(ROOT, "bin", "sketchcall.mjs");
 export const SAMPLE = path.join(ROOT, "examples", "pizza.excalidraw");
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const ok = (c, m) => { console.log(`${c ? "PASS" : "FAIL"} ${m}`); if (!c) process.exitCode = 1; };
+// Ask every 100 ms until fn (sync or async) holds; returns the wait in ms, or -1 after `ms`. A throw counts as "not yet"
+// (a page mid-reload, a record file not written yet). The gates wait from here, not with a timer inside the page: a page in
+// a background tab runs its timers and network callbacks late when the machine is busy (measured: an op landed 0.4–5 s
+// after the tab in front showed it, at load 25–30 on 10 cores).
+export async function poll(fn, ms = 15000) {
+  const t0 = Date.now();
+  for (;;) {
+    let y = false; try { y = await fn(); } catch { /* not yet */ }
+    if (y) return Date.now() - t0;
+    if (Date.now() - t0 >= ms) return -1;
+    await sleep(100);
+  }
+}
+// The same for a page's own state: settle returns the ms, until returns true or false.
+export const settle = (p, fn, arg, ms) => poll(() => p.evaluate(fn, arg), ms);
+export const until = async (p, fn, arg, ms) => (await settle(p, fn, arg, ms)) >= 0;
+// A page has its first copy of the record: the dot turns on in the same step that ends that fetch. An op that arrives in the
+// first fetch is history (a tour waits behind Resume), so a gate posts nothing before this.
+export const joined = (p) => until(p, () => document.getElementById("dot").classList.contains("on"));
 
 // The gates run on ports 4900–4940 only, each on a fresh copy of a board in the system's temp folder.
 export function portArg(i, fallback) {
@@ -28,6 +47,7 @@ export const cli = (dir, ...args) => execFileSync(process.execPath, [BIN, ...arg
 export async function serveBoard(dir, port) {
   const srv = spawn(process.execPath, [BIN, "serve", "--port", String(port)], { cwd: dir, stdio: ["ignore", "ignore", "pipe"] });
   let err = ""; srv.stderr.on("data", (d) => { err += d; });
+  process.on("exit", () => srv.kill());   // a test that crashes still stops its server
   for (let i = 0; i < 50; i++) {
     if (srv.exitCode !== null) throw new Error(`the server exited: ${err}`);
     try { await fetch(`http://127.0.0.1:${port}/api/hello`, { signal: AbortSignal.timeout(500) }); return srv; } catch { await sleep(100); }
@@ -37,6 +57,7 @@ export async function serveBoard(dir, port) {
 // The sketchcall MCP server over stdio, recording every channel message it pushes.
 export function mcpSession(args = []) {
   const p = spawn(process.execPath, [BIN, "mcp", ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  process.on("exit", () => p.kill());
   const waiting = new Map(), notes = []; let n = 0, buf = "";
   p.stdout.on("data", (d) => {
     buf += d; let i;
