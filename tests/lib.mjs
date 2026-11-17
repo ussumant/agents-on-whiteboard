@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+process.setMaxListeners(50);   // every server, session and browser a gate starts stops itself on exit
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const BIN = path.join(ROOT, "bin", "sketchcall.mjs");
 export const SAMPLE = path.join(ROOT, "examples", "pizza.excalidraw");
@@ -75,19 +76,25 @@ export async function serveBoard(dir, port) {
 export function mcpSession(args = []) {
   const p = spawn(process.execPath, [BIN, "mcp", ...args], { stdio: ["pipe", "pipe", "pipe"] });
   process.on("exit", () => p.kill());
-  const waiting = new Map(), notes = []; let n = 0, buf = "";
+  // notes: channel messages; others: every other notification (progress), stamped with when it came; answered: every reply
+  const waiting = new Map(), notes = [], others = [], answered = []; let n = 0, buf = "";
   p.stdout.on("data", (d) => {
     buf += d; let i;
     while ((i = buf.indexOf("\n")) >= 0) {
       const l = buf.slice(0, i); buf = buf.slice(i + 1); if (!l.trim()) continue;
       const m = JSON.parse(l);
+      if (m.id != null) answered.push(m.id);
       if (m.id != null && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
       else if (m.method === "notifications/claude/channel") notes.push(m.params);
+      else if (m.method) others.push({ ...m, at: Date.now() });
     }
   });
-  const rpc = (method, params) => new Promise((r) => { const id = ++n; waiting.set(id, r); p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); });
+  const send = (method, params) => { const id = ++n; const done = new Promise((r) => waiting.set(id, r)); p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); return { id, done }; };
+  const rpc = (method, params) => send(method, params).done;
   const notify = (method, params) => p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, ...(params ? { params } : {}) }) + "\n");
-  const call = async (name, args) => { const m = await rpc("tools/call", { name, arguments: args }); const text = m.result.content[0].text; let json = null; try { json = JSON.parse(text); } catch {}
-    return { err: !!m.result.isError, text, json }; };
-  return { p, rpc, notify, call, notes };
+  const parse = (m) => { const text = m.result.content[0].text; let json = null; try { json = JSON.parse(text); } catch {} return { err: !!m.result.isError, text, json }; };
+  const call = async (name, args) => parse(await rpc("tools/call", { name, arguments: args }));
+  // A tool call started now and read later: its request id, and `done` for the reply. `meta` goes in as _meta.
+  const start = (name, args, meta) => { const r = send("tools/call", { name, arguments: args, ...(meta ? { _meta: meta } : {}) }); return { id: r.id, done: r.done.then(parse) }; };
+  return { p, rpc, notify, call, start, notes, others, answered };
 }

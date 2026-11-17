@@ -17,6 +17,11 @@ The board
                          Save the pictures in an exported board into the call's files.
 
 The agent
+  wait [--since <id>] [--timeout 30m]
+                         Wait for the person's next comment, answer or canvas writing, print it as
+                         one JSON line and exit 0. Exit 2 if nothing came before the timeout.
+                         --since <id> (the id in the last line you got) first returns anything
+                         that came in after it, so nothing is lost between waits.
   mcp [--channels]       Run the MCP server over stdio. --channels also pushes each comment into
                          Claude Code as a channel message (a research preview).
   say "<text>" [--on <id>]
@@ -37,7 +42,7 @@ Options
 `;
 
 // Flags with a value, and flags without one. Everything else is a positional argument.
-const VAL = new Set(['--dir', '--port', '--seed', '--presenter', '--tour', '--on']);
+const VAL = new Set(['--dir', '--port', '--seed', '--presenter', '--tour', '--on', '--since', '--timeout']);
 const BOOL = new Set(['--channels', '--take-over', '--help', '-h']);
 const argv = process.argv.slice(2), opts = {}, pos = [];
 for (let i = 0; i < argv.length; i++) {
@@ -70,6 +75,18 @@ try {
       if (!rest[0]) fail('usage: sketchcall import-files <export.excalidraw>');
       print(S.importFiles(board(), rest[0])); break;
     case 'mcp': (await import('../src/mcp.mjs')).runMcp({ channels: !!opts.channels }); break;
+    case 'wait': {
+      // 30m, 90s, 2h, 1500ms, or a number of seconds; at most a day.
+      const m = String(opts.timeout ?? '30m').match(/^(\d+(?:\.\d+)?)(ms|s|m|h)?$/), ms = m ? Number(m[1]) * { ms: 1, s: 1e3, m: 6e4, h: 36e5 }[m[2] || 's'] : NaN;
+      if (!(ms > 0 && ms <= 864e5)) fail(`--timeout: like 30m, 90s or 2h, at most 24h (got ${opts.timeout})`);
+      const { follow, flatEvent } = await import('../src/follow.mjs');
+      let stop = () => {}, done = false;
+      const finish = (code, line) => { if (done) return; done = true; stop(); clearTimeout(timer); if (line) process.stdout.write(line + '\n', () => process.exit(code)); else process.exit(code); };
+      const timer = setTimeout(() => { process.stderr.write(`nothing new in ${opts.timeout ?? '30m'}\n`); finish(2); }, ms);
+      stop = follow(board(), ev => finish(0, JSON.stringify(flatEvent(ev))), { me: opts.presenter, since: opts.since });
+      if (!done) process.stderr.write(`waiting for the next comment on ${path.basename(dir)}\n`);
+      break;
+    }
     case 'say':
       if (!rest.length) fail('usage: sketchcall say "text" [--on <element id>]');
       print(S.say(board(), rest.join(' '), opts.on ?? null)); break;

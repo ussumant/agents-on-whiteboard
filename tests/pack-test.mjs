@@ -11,7 +11,7 @@ const ok = (c, m) => { console.log(`${c ? "PASS" : "FAIL"} ${m}`); if (!c) proce
 
 const packed = JSON.parse(execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
 const files = packed[0].files.map((f) => f.path).sort();
-const ALLOWED = ["LICENSE", "README.md", "package.json", "bin/sketchcall.mjs", "src/server.mjs", "src/mcp.mjs", "src/board.html", "examples/pizza.excalidraw"];
+const ALLOWED = ["LICENSE", "README.md", "package.json", "bin/sketchcall.mjs", "src/server.mjs", "src/mcp.mjs", "src/follow.mjs", "src/board.html", "examples/pizza.excalidraw"];
 const extra = files.filter((f) => !ALLOWED.includes(f));
 const missing = ALLOWED.filter((f) => f !== "README.md" && !files.includes(f));
 ok(!extra.length && !missing.length, `1 npm pack lists only the package files (${files.join(", ")})${extra.length ? ` extra: ${extra}` : ""}${missing.length ? ` missing: ${missing}` : ""}`);
@@ -23,6 +23,6 @@ ok(pkg.bin && pkg.bin.sketchcall === "bin/sketchcall.mjs" && /^>=\s*20/.test((pk
 ok(pkg.license === "MIT" && fs.readFileSync(path.join(ROOT, "LICENSE"), "utf8").startsWith("MIT License"), "2c MIT licence");
 
 const help = execFileSync(process.execPath, [path.join(ROOT, "bin/sketchcall.mjs"), "--help"], { encoding: "utf8" });
-const COMMANDS = ["serve", "share", "unshare", "record", "import-files", "mcp", "say", "op", "point", "tour", "tour-step"];
+const COMMANDS = ["serve", "share", "unshare", "record", "import-files", "wait", "mcp", "say", "op", "point", "tour", "tour-step"];
 const absent = COMMANDS.filter((c) => !new RegExp(`^  ${c}\\b`, "m").test(help));
 ok(!absent.length, `3 --help lists every command${absent.length ? ` (missing: ${absent})` : ""}`);

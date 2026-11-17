@@ -87,7 +87,7 @@ const loadable = e => !!e && typeof e === 'object' && typeof e.id === 'string' &
   && (e.version === undefined || (Number.isFinite(e.version) && e.version < 1e9)) && shapeOk(e);
 
 // The record helpers, shared with mcp.mjs so both write exactly the same lines. `dir` is the board folder.
-// live/canvas.jsonl: the BOARD events as records ({ts, author, via, key, id, text, change}), which the MCP server pushes
+// live/canvas.jsonl: the BOARD events as records ({id, ts, author, via, key, el, text, change}), which the MCP server pushes
 // from, never by reading the words of a log line back.
 export const files = dir => ({ live: path.join(dir, 'live'), thread: path.join(dir, 'live', 'thread.jsonl'), canvas: path.join(dir, 'live', 'canvas.jsonl'),
   events: path.join(dir, 'live', 'events.log'), scene: path.join(dir, 'live', 'scene.json'), share: path.join(dir, 'live', 'share.json') });
@@ -446,7 +446,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       const change = !(key in lastTexts) && t.trim() ? 'wrote' : key in lastTexts && lastTexts[key][0] !== t ? 'changed' : null;
       if (!change) continue;
       fs.appendFileSync(EVENTS, change === 'wrote' ? `BOARD: ${oneLine(who)} wrote "${flat(t)}" (${oneLine(key)})\n` : `BOARD: ${oneLine(who)} changed ${oneLine(key)} to "${flat(t)}"\n`);
-      fs.appendFileSync(CANVAS, JSON.stringify({ ts: now(), author: a, ...(far ? { via: 'link' } : {}), key, id, text: flat(t), change }) + '\n');
+      fs.appendFileSync(CANVAS, JSON.stringify({ id: nextId('b'), ts: now(), author: a, ...(far ? { via: 'link' } : {}), key, el: id, text: flat(t), change }) + '\n');
     }
     lastTexts = texts;
   }

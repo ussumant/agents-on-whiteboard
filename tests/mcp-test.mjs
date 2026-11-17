@@ -28,7 +28,7 @@ try {
   B.notify("notifications/initialized");
   ok(iB.protocolVersion === "2025-06-18", `2 initialize at 2026-07-28 also answers 2025-06-18 (${iB.protocolVersion})`);
   const names = (await B.rpc("tools/list", {})).result.tools.map((t) => t.name);
-  const want = ["board_open", "board_say", "board_focus", "board_note", "board_arrow", "board_edit", "board_delete", "board_tour", "board_tour_step", "board_point", "board_thread"];
+  const want = ["board_open", "board_say", "board_focus", "board_note", "board_arrow", "board_edit", "board_delete", "board_tour", "board_tour_step", "board_point", "board_wait", "board_thread"];
   ok(want.every((n) => names.includes(n)), `2b tools/list has the board tools (${names.join(", ")})`);
 
   // 3 board_open starts sketchcall's own server for the folder, on the port given
