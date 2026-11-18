@@ -1,12 +1,12 @@
 {
-  "name": "sketchcall",
+  "name": "whiteboard-agents",
   "description": "A live whiteboard call with your coding agent.",
   "owner": {
-    "name": "sketchcall contributors"
+    "name": "whiteboard-agents contributors"
   },
   "plugins": [
     {
-      "name": "sketchcall",
+      "name": "whiteboard-agents",
       "source": "./",
       "description": "Comment on a whiteboard. Your coding agent answers on it."
     }

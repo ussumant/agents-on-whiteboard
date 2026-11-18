@@ -1,6 +1,6 @@
 // Presenter gate: named presenters, each with its own pointer, name and colour; the tour presenter's pointer and name on
 // screen for the whole tour; ✓ keep / ✎ change answers on the card; the card's feedback loop. Two real MCP sessions
-// (sketchcall mcp --channels over stdio, "Look session" and "Plugin session") drive headless pages over a fresh copy of the
+// (whiteboard-agents mcp --channels over stdio, "Look session" and "Plugin session") drive headless pages over a fresh copy of the
 // sample board, on a spare port.
 //   node tests/presenter-test.mjs [spare port 4900–4940] [shots dir]      → PASS lines; screenshots at 1440×900 and 393×852
 // It waits ~65 s at the end for the 60 s park-then-fade.
@@ -8,8 +8,8 @@ import fs from "fs"; import puppeteer from "puppeteer";
 import { ok, sleep, cli as run, scratch, serveBoard, mcpSession, portArg, poll, settle, until, joined } from "./lib.mjs";
 const PORT = portArg(2, 4912), SHOTS = process.argv[3], D = scratch("presenter"), U = `http://localhost:${PORT}/`;
 const cli = (...a) => run(D, ...a);
-const ev = () => fs.existsSync(`${D}/.sketchcall/events.log`) ? fs.readFileSync(`${D}/.sketchcall/events.log`, "utf8") : "";
-const thread = () => fs.readFileSync(`${D}/.sketchcall/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const ev = () => fs.existsSync(`${D}/.whiteboard-agents/events.log`) ? fs.readFileSync(`${D}/.whiteboard-agents/events.log`, "utf8") : "";
+const thread = () => fs.readFileSync(`${D}/.whiteboard-agents/thread.jsonl`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const answers = () => thread().filter((i) => i.kind === "op" && i.op === "answer");
 if (SHOTS) fs.mkdirSync(SHOTS, { recursive: true });
 

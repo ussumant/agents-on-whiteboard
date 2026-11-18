@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 process.setMaxListeners(50);   // every server, session and browser a gate starts stops itself on exit
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-export const BIN = path.join(ROOT, "bin", "sketchcall.mjs");
+export const BIN = path.join(ROOT, "bin", "whiteboard-agents.mjs");
 export const SAMPLE = path.join(ROOT, "examples", "pizza.excalidraw");
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const ok = (c, m) => { console.log(`${c ? "PASS" : "FAIL"} ${m}`); if (!c) process.exitCode = 1; };
@@ -39,11 +39,11 @@ export function portArg(i, fallback) {
   return p;
 }
 export function scratch(name, board = SAMPLE) {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), `sketchcall-${name}-`));
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), `whiteboard-agents-${name}-`));
   fs.copyFileSync(board, path.join(d, path.basename(board)));
   return d;
 }
-// `sketchcall <args>` in the board folder, as an agent's shell would run it.
+// `whiteboard-agents <args>` in the board folder, as an agent's shell would run it.
 export const cli = (dir, ...args) => execFileSync(process.execPath, [BIN, ...args], { cwd: dir }).toString();
 // The write key a page gets in its HTML (a fresh one each time the server starts), for a gate that posts like a page.
 // `headers` lets a gate ask as a link guest.
@@ -56,8 +56,8 @@ export async function pageKey(url, headers = {}) {
 export const credsIn = (html) => { const m = String(html).match(/var BOARD = (\{[^\n]*\});\n/), b = m ? JSON.parse(m[1]) : {};
   return { key: b.token, c: b.page || `pg${Math.random().toString(36).slice(2, 8)}`, secret: b.pageKey }; };
 // A page's write: JSON, its key, the board's own Origin (what a browser sends) and, for calls naming its page id, its secret.
-export const asPage = (key, origin, secret) => ({ "content-type": "application/json", ...(key ? { "x-sketchcall-key": key } : {}), ...(origin ? { origin } : {}),
-  ...(secret ? { "x-sketchcall-page": secret } : {}) });
+export const asPage = (key, origin, secret) => ({ "content-type": "application/json", ...(key ? { "x-whiteboard-agents-key": key } : {}), ...(origin ? { origin } : {}),
+  ...(secret ? { "x-whiteboard-agents-page": secret } : {}) });
 // The board server, started the way a person starts it; resolves once it answers.
 export async function serveBoard(dir, port) {
   // A server left on the port (a killed run) would answer for this board and the gate would test the wrong folder.
@@ -72,7 +72,7 @@ export async function serveBoard(dir, port) {
   }
   srv.kill(); throw new Error(`no server on ${port}: ${err}`);
 }
-// The sketchcall MCP server over stdio, recording every channel message it pushes.
+// The whiteboard-agents MCP server over stdio, recording every channel message it pushes.
 export function mcpSession(args = []) {
   const p = spawn(process.execPath, [BIN, "mcp", ...args], { stdio: ["pipe", "pipe", "pipe"] });
   process.on("exit", () => p.kill());

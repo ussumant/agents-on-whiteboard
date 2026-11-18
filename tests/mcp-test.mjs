@@ -1,5 +1,5 @@
 // MCP gate: the stdio server answers `initialize` from clients on either protocol revision with the pinned 2025-06-18
-// (channels need it), lists the board tools, starts sketchcall's own board server, and pushes comments into the session
+// (channels need it), lists the board tools, starts whiteboard-agents's own board server, and pushes comments into the session
 // only when started with --channels. Runs on a fresh copy of the sample board, on a spare port.
 //   node tests/mcp-test.mjs [spare port 4900–4940]      → PASS lines
 import fs from "node:fs";
@@ -18,7 +18,7 @@ try {
   const A = mcpSession(); sessions.push(A);
   const iA = (await A.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "mcp-test", version: "0" } })).result;
   A.notify("notifications/initialized");
-  ok(iA.protocolVersion === "2025-06-18" && iA.serverInfo.name === "sketchcall", `1 initialize at 2025-06-18 answers 2025-06-18 (${iA.protocolVersion}, ${iA.serverInfo.name})`);
+  ok(iA.protocolVersion === "2025-06-18" && iA.serverInfo.name === "whiteboard-agents", `1 initialize at 2025-06-18 answers 2025-06-18 (${iA.protocolVersion}, ${iA.serverInfo.name})`);
   ok(!(iA.capabilities.experimental || {})["claude/channel"] && !/<channel/.test(iA.instructions), "1b without --channels: no claude/channel capability, and the instructions don't promise pushes");
   ok(/the person/.test(iA.instructions), "1c the instructions talk about \"the person\"");
 
@@ -36,11 +36,11 @@ try {
   const texts = [iB.instructions, iC0.instructions, ...(await B.rpc("tools/list", {})).result.tools.map((t) => t.description), ...tC0.map((t) => t.description)];
   ok(texts.every((t) => !t.includes("${")), `2c no unfilled \${…} in the instructions or tool descriptions (${texts.filter((t) => t.includes("\${")).map((t) => t.slice(0, 50))})`);
 
-  // 3 board_open starts sketchcall's own server for the folder, on the port given
+  // 3 board_open starts whiteboard-agents's own server for the folder, on the port given
   const o = await A.call("board_open", { dir: D, port: PORT });
   ok(!o.err && o.text.startsWith(`http://localhost:${PORT}/`) && listeners().length === 1, `3 board_open starts the board server (${o.text.slice(0, 120)})`);
   const page = await (await fetch(`${U}/`)).text();
-  ok(page.includes('"name":"pizza"') && !page.includes("__SKETCHCALL_BOARD__"), "3b the server it started serves the package's page, named after the board's file");
+  ok(page.includes('"name":"pizza"') && !page.includes("__WHITEBOARD_AGENTS_BOARD__"), "3b the server it started serves the package's page, named after the board's file");
   const ob = await B.call("board_open", { dir: D, port: PORT });
   ok(!ob.err && listeners().length === 1, "3c a second session attaches to the same server");
   const bad = await B.call("board_open", { dir: fs.mkdtempSync(D + "-empty"), port: PORT });
@@ -56,7 +56,7 @@ try {
   const C = mcpSession(["--channels"]); sessions.push(C);
   const iC = (await C.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "mcp-test", version: "0" } })).result;
   C.notify("notifications/initialized");
-  ok(iC.protocolVersion === "2025-06-18" && !!(iC.capabilities.experimental || {})["claude/channel"] && /<channel source="sketchcall"/.test(iC.instructions), "5 with --channels: the claude/channel capability and the push in the instructions");
+  ok(iC.protocolVersion === "2025-06-18" && !!(iC.capabilities.experimental || {})["claude/channel"] && /<channel source="whiteboard-agents"/.test(iC.instructions), "5 with --channels: the claude/channel capability and the push in the instructions");
   await C.call("board_open", { dir: D, port: PORT });
   const c5 = await comment("and why one per store?", "Maya");
   for (let i = 0; i < 30 && !C.notes.length; i++) await sleep(100);

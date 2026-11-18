@@ -1,18 +1,18 @@
 {
-  "name": "sketchcall",
-  "displayName": "sketchcall",
+  "name": "whiteboard-agents",
+  "displayName": "whiteboard-agents",
   "description": "Comment on a whiteboard. Your coding agent answers on it: a live Excalidraw board on your own computer, where Claude hears each comment and replies beside the box it is about.",
   "author": {
-    "name": "sketchcall contributors"
+    "name": "whiteboard-agents contributors"
   },
-  "homepage": "https://github.com/ussumant/sketchcall#readme",
-  "repository": "https://github.com/ussumant/sketchcall",
+  "homepage": "https://github.com/ussumant/whiteboard-agents#readme",
+  "repository": "https://github.com/ussumant/whiteboard-agents",
   "license": "MIT",
   "keywords": ["excalidraw", "whiteboard", "mcp", "diagram", "collaboration"],
   "mcpServers": {
-    "sketchcall": {
+    "whiteboard-agents": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs", "mcp"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs", "mcp"]
     }
   }
 }

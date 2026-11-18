@@ -1,4 +1,4 @@
-// Wait gate: `sketchcall wait` and board_wait wake the agent on the person's next comment, without a timer.
+// Wait gate: `whiteboard-agents wait` and board_wait wake the agent on the person's next comment, without a timer.
 //   - a comment wakes both within 1 s, as the same JSON
 //   - a TOUR line, the agent's own reply and its own note's label wake neither
 //   - `wait --timeout` exits 2, board_wait returns {timeout: true}
@@ -19,7 +19,7 @@ const post = (pth, body, withPage) => fetch(`${U}${pth}`, { method: "POST", head
 const comment = (text) => post("/api/comment", { text, on: { id: "queue", label: "📬 Order queue" } });
 const events = () => fs.existsSync(S.files(D).events) ? fs.readFileSync(S.files(D).events, "utf8") : "";
 
-// `sketchcall wait` as an agent runs it in the background: resolves with its exit code, its line and how long it took.
+// `whiteboard-agents wait` as an agent runs it in the background: resolves with its exit code, its line and how long it took.
 function cliWait(...args) {
   const p = spawn(process.execPath, [BIN, "wait", ...args], { cwd: D, stdio: ["ignore", "pipe", "pipe"] });
   process.on("exit", () => p.kill());
@@ -46,7 +46,7 @@ const t1 = Date.now(), c1 = await comment("why a queue?");
 const [e1, r1] = await Promise.all([w1.exit, b1.done]), r1at = Date.now();
 let j1 = null; try { j1 = JSON.parse(e1.out); } catch { /* checked below */ }
 ok(e1.code === 0 && j1 && j1.kind === "comment" && j1.content === "why a queue?" && j1.id === c1.json.id && j1.box_id === "queue" && e1.at - t1 <= 1000,
-  `1 a comment wakes \`sketchcall wait\` in ${e1.at - t1} ms, exit 0, one JSON line (${e1.out.slice(0, 120)})`);
+  `1 a comment wakes \`whiteboard-agents wait\` in ${e1.at - t1} ms, exit 0, one JSON line (${e1.out.slice(0, 120)})`);
 ok(!r1.err && r1.json && r1.json.id === c1.json.id && r1at - t1 <= 1000, `1b … and board_wait in ${r1at - t1} ms`);
 ok(r1.json && JSON.stringify(r1.json) === JSON.stringify(j1), "1c both return the same JSON");
 

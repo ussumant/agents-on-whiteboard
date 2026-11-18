@@ -1,13 +1,13 @@
 {
-  "name": "sketchcall",
+  "name": "whiteboard-agents",
   "version": "0.1.0",
   "private": true,
-  "mcpName": "io.github.ussumant/sketchcall",
+  "mcpName": "io.github.ussumant/whiteboard-agents",
   "description": "Comment on a whiteboard. Your coding agent answers on it.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "sketchcall": "bin/sketchcall.mjs"
+    "whiteboard-agents": "bin/whiteboard-agents.mjs"
   },
   "files": [
     "bin/",
@@ -19,11 +19,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ussumant/sketchcall.git"
+    "url": "git+https://github.com/ussumant/whiteboard-agents.git"
   },
-  "homepage": "https://github.com/ussumant/sketchcall#readme",
+  "homepage": "https://github.com/ussumant/whiteboard-agents#readme",
   "bugs": {
-    "url": "https://github.com/ussumant/sketchcall/issues"
+    "url": "https://github.com/ussumant/whiteboard-agents/issues"
   },
   "scripts": {
     "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/security-r2-test.mjs 4928 4929 4930 && node tests/security-r3-test.mjs 4931 4932 4933 && node tests/security-r4-test.mjs 4934 4935 4936 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912 && node tests/stranger-test.mjs 4927",

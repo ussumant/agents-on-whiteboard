@@ -80,18 +80,19 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   const own = await postAll(B, "home", Array.from({ length: 300 }, (_, i) => huge("ob", i)));
   ok(own === 300, `N1-r4f this computer's very large shapes aren't counted: ${own} of 300 taken after the guest's 200`);
   await B.stop();
-  // the most a guest can add under the cap: 200 ellipses at the largest size, and 2,300 just under the line (1,000)
+  // the cap's own case: 200 ellipses at the largest size with 2,300 at the line (1,000). Not the worst a guest can do: the
+  // final review made a new tab wait about a minute with 2,300 cross-hatched boxes at 999 (README, Known limits).
   const W = await board(PORT, "worst");
   const took = await postAll(W, "guest", [...Array.from({ length: 200 }, (_, i) => huge("wh", i, "ellipse")),
     ...Array.from({ length: 2300 }, (_, i) => ({ ...base, id: `wm${i}`, type: "ellipse", fillStyle: "solid", x: (i % 50) * 100 - 2500, y: Math.floor(i / 50) * 100 - 2500, width: 1000, height: 1000, seed: i + 1 }))]);
   const vw = await visit(PORT);
-  ok(took === 2500 && vw.ready > 0 && vw.ready < 5000, `N1-r4g the most a guest can add (200 ellipses 1e5 wide and 2,300 ellipses 1,000 wide; ${took} taken) loads in a clean visitor in ${vw.ready} ms`);
+  ok(took === 2500 && vw.ready > 0 && vw.ready < 5000, `N1-r4g 200 ellipses 1e5 wide and 2,300 ellipses 1,000 wide from a guest (${took} taken) load in a clean visitor in ${vw.ready} ms`);
   await W.stop();
 }
 
-/* S2 (item 2): hard links in .sketchcall/ (r4-sym.mjs) */
+/* S2 (item 2): hard links in .whiteboard-agents/ (r4-sym.mjs) */
 {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r4-hard-"));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-r4-hard-"));
   const res = [];
   const plants = [["events.log = the repo's setup.sh", (repo, call) => { fs.writeFileSync(path.join(repo, "setup.sh"), 'echo "setting up"\n'); fs.linkSync(path.join(repo, "setup.sh"), path.join(call, "events.log")); return path.join(repo, "setup.sh"); }],
     ["files/p1.png = the repo's .env", (repo, call) => { fs.writeFileSync(path.join(repo, ".env"), "API_KEY=sk-live-0123456789\n"); fs.mkdirSync(path.join(call, "files")); fs.linkSync(path.join(repo, ".env"), path.join(call, "files", "p1.png")); return path.join(repo, ".env"); }],
@@ -105,7 +106,7 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
     if (code === "still running") await poll(async () => !(await alive(PORT)), 5000);
     res.push({ name, code, said: /hard link|names on disk|not a plain file/i.test(err), victim: !victim || fs.readFileSync(victim, "utf8") === before });
   }
-  ok(res.every((r) => r.code === 1 && r.said && r.victim), `S2-r4a the server refuses to start on a .sketchcall holding a hard link or a pipe, says what it found, and writes nothing (${JSON.stringify(res.map((r) => `${r.name}: ${r.code}${r.said ? "" : " (silent)"}${r.victim ? "" : " WROTE"}`))})`);
+  ok(res.every((r) => r.code === 1 && r.said && r.victim), `S2-r4a the server refuses to start on a .whiteboard-agents holding a hard link or a pipe, says what it found, and writes nothing (${JSON.stringify(res.map((r) => `${r.name}: ${r.code}${r.said ? "" : " (silent)"}${r.victim ? "" : " WROTE"}`))})`);
   // after start: events.log and scene.json swapped for hard links to the repo's scripts; a guest's comment and edit follow
   const B = await board(PORT, "hardswap"), F = S.files(B.dir), hook = path.join(B.dir, "setup.sh"), cfg = path.join(B.dir, "deploy.sh");
   fs.writeFileSync(hook, 'echo "setting up"\n'); fs.writeFileSync(cfg, 'echo "deploying"\n');
@@ -162,15 +163,15 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
 
 /* T2 (item 5): terminal escapes in what the CLI prints (r4-shell.mjs) */
 {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r4-esc-")), marks = ["PWNED-q", "PWNED-nl"].map((m) => path.join(parent, m));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-r4-esc-")), marks = ["PWNED-q", "PWNED-nl"].map((m) => path.join(parent, m));
   const CTRL = /[\x00-\x09\x0b-\x1f\x7f-\x9f]/g;   // every control character but the line break
   const names = [["terminal escapes", "ok\x1b[2K\x1b[1A\x1b]0;HACKED\x07\x1b]52;c;ZWNobyBwd25lZA==\x07"], ["newline then $()", "a\n$(touch PWNED-nl)"], ["quote and $()", "x'$(touch PWNED-q)'y"]];
   const res = [];
   for (const [label, name] of names) {
     const weird = path.join(parent, name); fs.mkdirSync(weird);
     const o = run(parent, ["open", "--dir", weird, "--no-open", "--port", String(PORT3)]), out = o.stdout + o.stderr;
-    const line = o.stdout.split(/\n(?=  npx|Stop|Then)/).find((l) => /npx sketchcall wait --dir/.test(l)) || "";
-    const cmd = line.trim().replace(/\s{2,}the next comment.*$/s, "").replace("npx sketchcall", "printf '%s\\n'");
+    const line = o.stdout.split(/\n(?=  npx|Stop|Then)/).find((l) => /npx whiteboard-agents wait --dir/.test(l)) || "";
+    const cmd = line.trim().replace(/\s{2,}the next comment.*$/s, "").replace("npx whiteboard-agents", "printf '%s\\n'");
     const sh = spawnSync("/bin/sh", ["-c", cmd], { cwd: parent, encoding: "utf8" });
     res.push({ label, exit: o.status, raw: (out.match(CTRL) || []).length, path: sh.stdout.split("\n").includes(weird) || sh.stdout.replace(/\n$/, "").endsWith(weird), ran: marks.some((m) => fs.existsSync(m)) });
     run(parent, ["stop", "--dir", weird]);
@@ -184,7 +185,7 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   // JSON.stringify leaves raw): still JSON, the same text back, and nothing raw in them
   const odd = "del\x7f nel\u0085 csi\u009b[2J end", said = run(B.dir, ["say", odd]); let item = null; try { item = JSON.parse(said.stdout); } catch { /* not JSON */ }
   await B.stop();
-  const two = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r4-two-")); for (const f of ["one\x1b[2K.excalidraw", "two\x07.excalidraw"]) fs.copyFileSync(SAMPLE, path.join(two, f));
+  const two = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-r4-two-")); for (const f of ["one\x1b[2K.excalidraw", "two\x07.excalidraw"]) fs.copyFileSync(SAMPLE, path.join(two, f));
   const err = run(two, ["open", "--no-open", "--port", String(PORT3)]);
   ok(rec.status === 0 && /there/.test(rec.stdout) && !(rec.stdout + rec.stderr).match(CTRL) && err.status === 1 && /\\x1b/.test(err.stderr) && !(err.stdout + err.stderr).match(CTRL),
     `T2b \`record\` prints a guest's escape codes as text, and so does an error naming two boards (${(rec.stdout.match(/hi.*there/) || [""])[0]} | ${err.stderr.trim().slice(0, 90)})`);

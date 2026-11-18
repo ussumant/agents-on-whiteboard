@@ -16,15 +16,15 @@ const base = { x: 0, y: 0, width: 200, height: 120, angle: 0, strokeColor: "#1e1
   roughness: 1, opacity: 100, groupIds: [], frameId: null, roundness: null, seed: 1, version: 3, versionNonce: 1, isDeleted: false, boundElements: null, updated: 1, locked: false };
 const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle", x: (i % 20) * 60, y: Math.floor(i / 20) * 60, width: w, height: w, backgroundColor: "#ff8787", fillStyle: "cross-hatch", strokeWidth: 0.5, opacity: 30, seed: i + 1, version: 2, ...extra });
 
-/* S2 (item 1): symlinks a cloned repo ships in .sketchcall/ (r3-sym.mjs, r3-open.mjs) */
+/* S2 (item 1): symlinks a cloned repo ships in .whiteboard-agents/ (r3-sym.mjs, r3-open.mjs) */
 {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r3-sym-"));
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-r3-sym-"));
   const victim = path.join(work, "victim-hook.sh"), dangling = path.join(work, "created-through-a-link.txt"), secret = path.join(work, "secret.txt");
   fs.writeFileSync(victim, 'echo "a script the owner runs"\n'); fs.writeFileSync(secret, "PRIVATE KEY MATERIAL\n");
   const cases = [["events.log -> a script", (c) => fs.symlinkSync(victim, path.join(c, "events.log"))], ["server.json -> a file", (c) => fs.symlinkSync(victim, path.join(c, "server.json"))],
     ["board.json -> a new file", (c) => fs.symlinkSync(dangling, path.join(c, "board.json"))], ["thread.jsonl -> a file", (c) => fs.symlinkSync(victim, path.join(c, "thread.jsonl"))],
     ["files/x.png -> a secret", (c) => { fs.mkdirSync(path.join(c, "files")); fs.symlinkSync(secret, path.join(c, "files", "x.png")); }],
-    ["files/ -> another folder", (c) => fs.symlinkSync(work, path.join(c, "files"))], [".sketchcall -> another folder", null]];
+    ["files/ -> another folder", (c) => fs.symlinkSync(work, path.join(c, "files"))], [".whiteboard-agents -> another folder", null]];
   const res = [];
   for (const [name, plant] of cases) {
     const repo = scratch("r3-symrepo"), call = path.join(repo, S.CALL);
@@ -35,7 +35,7 @@ const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle
     if (code === "still running") await poll(async () => !(await alive(PORT)), 5000);
     res.push({ name, code, said: /symlink|symbolic link/i.test(err) && err.includes(path.basename(plant ? call : repo)) || /symlink/i.test(err), victim: fs.readFileSync(victim, "utf8") === before, created: fs.existsSync(dangling) });
   }
-  ok(res.every((r) => r.code === 1 && r.said && r.victim && !r.created), `S2a the server refuses to start on a .sketchcall with a symlink in it, says so, and writes nothing through it (${JSON.stringify(res.map((r) => `${r.name}: ${r.code}${r.said ? "" : " (silent)"}${r.victim ? "" : " WROTE"}${r.created ? " CREATED" : ""}`))})`);
+  ok(res.every((r) => r.code === 1 && r.said && r.victim && !r.created), `S2a the server refuses to start on a .whiteboard-agents with a symlink in it, says so, and writes nothing through it (${JSON.stringify(res.map((r) => `${r.name}: ${r.code}${r.said ? "" : " (silent)"}${r.victim ? "" : " WROTE"}${r.created ? " CREATED" : ""}`))})`);
   // a link swapped in after the server started: a guest's comment must not land in the script
   const B = await board(PORT, "swap"), F = S.files(B.dir), before = fs.readFileSync(victim, "utf8");
   fs.rmSync(F.events, { force: true }); fs.symlinkSync(victim, F.events);
@@ -158,11 +158,11 @@ const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle
 
 /* S4 (item 6): the shell lines `open` prints (r3-open.mjs) */
 {
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "sketchcall-r3-open-")), mark = path.join(parent, "PWNED");
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-r3-open-")), mark = path.join(parent, "PWNED");
   const weird = path.join(parent, `a b "q" $(touch PWNED) \`touch PWNED2\` a'b`);   // pasted lines run in the parent folder, so a $() would make PWNED there
   fs.mkdirSync(weird);
   const o = run(parent, ["open", "--dir", weird, "--no-open", "--port", String(PORT)]);
-  const lines = o.stdout.split("\n").filter((l) => /npx sketchcall (wait|say|stop)/.test(l)).map((l) => l.slice(l.indexOf("npx sketchcall")).trim().replace(/\s{2,}\S.*$/, "").replace(/^npx sketchcall/, "printf '%s\\n'"));   // "Stop the board with: npx …" too
+  const lines = o.stdout.split("\n").filter((l) => /npx whiteboard-agents (wait|say|stop)/.test(l)).map((l) => l.slice(l.indexOf("npx whiteboard-agents")).trim().replace(/\s{2,}\S.*$/, "").replace(/^npx whiteboard-agents/, "printf '%s\\n'"));   // "Stop the board with: npx …" too
   const echoed = lines.map((l) => spawnSync("/bin/sh", ["-c", l], { cwd: parent, encoding: "utf8" }).stdout.split("\n"));
   const tell = o.stdout.split("\n").find((l) => /Then tell it/.test(l)) || "";
   ok(o.status === 0 && lines.length >= 3 && !fs.existsSync(mark) && !fs.existsSync(`${mark}2`) && echoed.every((a) => a.includes(weird)) && tell.includes(`'${weird.replace(/'/g, "'\\''")}'`),

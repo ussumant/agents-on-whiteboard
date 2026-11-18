@@ -1,7 +1,7 @@
 // The board server and the record of the call. A person comments on an Excalidraw board in the browser; their coding agent
-// answers on it (through the CLI in bin/sketchcall.mjs or the MCP tools in src/mcp.mjs), like a screen-share call.
+// answers on it (through the CLI in bin/whiteboard-agents.mjs or the MCP tools in src/mcp.mjs), like a screen-share call.
 //
-// A board is a folder holding one .excalidraw file. The call lives in its .sketchcall/ subfolder (CALL below):
+// A board is a folder holding one .excalidraw file. The call lives in its .whiteboard-agents/ subfolder (CALL below):
 //   thread.jsonl   the record: every comment, reply and op, one JSON line each
 //   events.log     one line per comment, per text someone writes or changes on the canvas, per picture and per tour
 //                  move: what a person (or a grep) reads
@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 // The name people see: the command, the page title, the MCP server, the call's folder. A rename changes it here and in
 // package.json, the plugin files and the README.
-export const NAME = 'sketchcall';
+export const NAME = 'whiteboard-agents';
 export const CALL = `.${NAME}`;
 export const DEFAULT_PORT = 4900;
 const PAGE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'board.html');
@@ -148,7 +148,7 @@ export const files = dir => { const live = path.join(dir, CALL); return { live, 
   events: path.join(live, 'events.log'), scene: path.join(live, 'scene.json'), share: path.join(live, 'share.json'), server: path.join(live, 'server.json'), board: path.join(live, 'board.json') }; };
 const now = () => new Date().toISOString();
 const nextId = p => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
-// No writes through symbolic links. A repo can ship its own .sketchcall/, and a link in it (events.log pointing at a shell
+// No writes through symbolic links. A repo can ship its own .whiteboard-agents/, and a link in it (events.log pointing at a shell
 // start-up file) put a link guest's words into a script the owner then ran. So the server won't start on a call folder
 // holding a link anywhere in it, and every write opens its file without following a link at the last step (O_NOFOLLOW),
 // after checking the folders between it and the call folder: a link swapped in later is caught too. The call folder is
@@ -544,10 +544,10 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   };
   const pageOk = (req, c, far) => {
     const side = far ? pages.link : pages.home, p = typeof c === 'string' && side.get(c);
-    if (!p || !same(req.headers['x-sketchcall-page'] || '', p.secret)) return false;
+    if (!p || !same(req.headers['x-whiteboard-agents-page'] || '', p.secret)) return false;
     side.delete(c); side.set(c, { secret: p.secret, seen: Date.now() }); return true;   // most recently heard from
   };
-  const page = (far, ids) => fs.readFileSync(PAGE, 'utf8').replace('"__SKETCHCALL_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home, ...ids }).replace(/</g, '\\u003c'));
+  const page = (far, ids) => fs.readFileSync(PAGE, 'utf8').replace('"__WHITEBOARD_AGENTS_BOARD__"', () => JSON.stringify({ ...BOARD, token: far ? KEYS.link : KEYS.home, ...ids }).replace(/</g, '\\u003c'));
   // Element ids a page may send: id-shaped ones, or an odd one the board's own file already has.
   const known = id => ID.test(id) || els.has(id);
   // A label bound to a box or arrow can get a fresh random id when a browser rebuilds it, so key it by its container:
@@ -708,7 +708,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       // and JSON. A website can send a simple text/plain POST to 127.0.0.1 without asking first; this is what stops it.
       if (req.method !== 'GET' || url.pathname === '/api/changes') {
         if (!ownOrigin(req, far)) return send(res, 403, { error: 'not from this board\'s page' });
-        if (!same(req.headers['x-sketchcall-key'] || '', far ? KEYS.link : KEYS.home)) return send(res, 403, { error: 'no board key, or an old one: reload the page' });
+        if (!same(req.headers['x-whiteboard-agents-key'] || '', far ? KEYS.link : KEYS.home)) return send(res, 403, { error: 'no board key, or an old one: reload the page' });
         if (req.method !== 'GET' && !/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) return send(res, 415, { error: 'send JSON (content-type: application/json)' });
       }
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {

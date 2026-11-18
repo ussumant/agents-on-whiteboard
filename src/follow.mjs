@@ -1,6 +1,6 @@
 // What wakes the agent: the person's comments, their answers on its tour steps, and text people write on the canvas, as
 // events. One follower for all three ways an agent hears them: the channel push (mcp --channels), board_wait, and
-// `sketchcall wait`. It watches the call's folder (fs.watch, no polling) and reads only what was added.
+// `whiteboard-agents wait`. It watches the call's folder (fs.watch, no polling) and reads only what was added.
 //
 // Never an event: the agent's own replies (author "claude"), its own note, arrow and edit text while unchanged (the server
 // leaves those out of canvas.jsonl), TOUR lines (they are only in events.log, which isn't read here), and an answer on a
@@ -42,7 +42,7 @@ export function eventOf(source, it, board, me) {
   return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, box_id: idOf(on?.id), box_label: on?.label,
     box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
 }
-// The JSON an agent gets from `sketchcall wait` and board_wait: the event's id, its fields, and the text.
+// The JSON an agent gets from `whiteboard-agents wait` and board_wait: the event's id, its fields, and the text.
 export const flatEvent = ev => ({ id: ev.id, ...ev.meta, content: ev.content });
 
 const linesOf = f => { try { return readSafe(f).split('\n'); } catch { return []; } };

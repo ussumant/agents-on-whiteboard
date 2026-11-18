@@ -12,7 +12,7 @@ The person reads the board, not this terminal. Every answer goes on the board, n
 Run this in the folder that holds their `.excalidraw` file (or pass the file):
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" open
+node "${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs" open
 ```
 
 It starts the board server, opens their browser, and prints the board's address and port. With no `.excalidraw` file in the folder, it copies a sample board there first. If another folder's board already uses port 4900, it picks the next free port: read the port from its output.
@@ -60,12 +60,12 @@ To present the board step by step, post a tour with `board_tour {title, steps: [
 The same loop works from the shell, in the board's folder:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" wait --since <the last id you saw>
-node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" say "<answer>" --reply-to <comment id>
+node "${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs" wait --since <the last id you saw>
+node "${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs" say "<answer>" --reply-to <comment id>
 ```
 
-`wait` prints one JSON line when the next comment comes and exits 0, or exits 2 after `--timeout` (default 30m). Run it as a background command and end your turn: its exit wakes you. `--since` returns what came in while you were busy: the person's own comments first. If it passed over comments from the share link to get there, the line has `skipped_guest_comments`, and `board_thread` or `sketchcall record` still has them.
+`wait` prints one JSON line when the next comment comes and exits 0, or exits 2 after `--timeout` (default 30m). Run it as a background command and end your turn: its exit wakes you. `--since` returns what came in while you were busy: the person's own comments first. If it passed over comments from the share link to get there, the line has `skipped_guest_comments`, and `board_thread` or `whiteboard-agents record` still has them.
 
 ## Stopping
 
-The board keeps running after the session ends, so the person can come back to it. To stop it: `node "${CLAUDE_PLUGIN_ROOT}/bin/sketchcall.mjs" stop` in the board's folder.
+The board keeps running after the session ends, so the person can come back to it. To stop it: `node "${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs" stop` in the board's folder.
