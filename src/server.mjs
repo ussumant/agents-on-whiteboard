@@ -471,8 +471,10 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const hatchOf = (e, far) => { if (!far || !HATCH.has(e.fillStyle)) return 0; const [w, h] = extent(e); return w * h; };
   // The link's very large shapes (over 1,000 wide or tall; a line by its points): at most 200, and past that its new ones
   // aren't taken. Shapes drawn on this computer aren't counted. Many of the largest shapes slowed every new tab, solid or
-  // not: 1,000 boxes 100,000 wide took 22 s to load, and 200 such ellipses with 2,300 more 2,000 wide took 24 s. With at
-  // most 200 over 1,000, the rest of the link's 2,500 no bigger, the slowest measured was 3.5 s.
+  // not: 1,000 boxes 100,000 wide took 22 s to load; with the cap, 200. Shapes under the line aren't counted, so a guest
+  // can still make a new tab slow: 2,500 cross-hatched boxes 999 wide took 16.9 s, and 200 boxes 100,000 wide with 2,300
+  // at 999 took 59.9 s (measured in the final review). That is left as it is: the link already lets a guest delete the
+  // whole board (README, Known limits).
   const BIG = 1000, BIG_MAX = 200, bigLink = new Set();
   const isBig = e => !e.isDeleted && extent(e).some(v => v > BIG);
   const put = (e, size, far = false) => {
