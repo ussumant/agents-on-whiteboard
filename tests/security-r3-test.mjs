@@ -64,14 +64,15 @@ const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle
   ok(t && t.took === 200 && stillHatched === 0 && v.ready > 0 && v.ready < base0.ready + 2000 && v.gap < 2000,
     `N1-r3a 200 cross-hatched boxes 1e5 wide from a guest are taken as solid fills (${stillHatched} still hatched), and a clean visitor loads in ${v.ready} ms (an empty board: ${base0.ready} ms; longest block ${v.gap} ms)`);
   await B.stop();
-  // at the cap: 2,500 boxes of 2,000 × 2,000 cross-hatched, the most the link may hold
+  // at the cap: 2,500 boxes of 1,000 × 1,000 cross-hatched, the most the link may hold at that size (past 1,000 wide the
+  // link takes 200 shapes, round 4). Their area is worth 625 boxes at 2,000, so at most 800 keep their hatching.
   const C = await board(PORT, "n1cap");
-  for (let k = 0; k < 2500; k += 1250) { await C.scene("guest", Array.from({ length: 1250 }, (_, i) => hatched(k + i, 2000, { strokeWidth: 1 }))); await sleep(400); }
+  for (let k = 0; k < 2500; k += 1250) { await C.scene("guest", Array.from({ length: 1250 }, (_, i) => hatched(k + i, 1000, { strokeWidth: 1 }))); await sleep(400); }
   await sleep(800);
   const capGot = sceneOf(C.dir).filter((e) => /^ch\d+$/.test(e.id)), capHatched = capGot.filter((e) => e.fillStyle !== "solid").length;
   const vc = await visit(PORT);
-  ok(capGot.length === 2500 && capHatched <= 200 && vc.ready > 0 && vc.ready < base0.ready + 2000 && vc.gap < 2000,
-    `N1-r3b 2,500 cross-hatched boxes at 2,000 × 2,000 from the link: ${capHatched} keep their hatching, and a clean visitor loads in ${vc.ready} ms (longest block ${vc.gap} ms)`);
+  ok(capGot.length === 2500 && capHatched <= 800 && vc.ready > 0 && vc.ready < base0.ready + 2000 && vc.gap < 2000,
+    `N1-r3b 2,500 cross-hatched boxes at 1,000 × 1,000 from the link: ${capHatched} keep their hatching, and a clean visitor loads in ${vc.ready} ms (longest block ${vc.gap} ms)`);
   await C.stop();
   // a scene.json planted with them is cleaned at startup; small hatched shapes keep their fill, with a stroke of at least 1
   const seed = S.readBoard(SAMPLE).elements;

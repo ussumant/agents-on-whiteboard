@@ -42,12 +42,13 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   }
   ok(res.every((x) => x.took === 200 && x.flat && x.ready > 0 && x.ready < base0.ready + 2000 && x.gap < 2000),
     `N1-r4a 200 boxes 1e5 wide filled with dots, dashed, zigzag-line, "Hachure" or no fill named, and 200 closed lines declaring 10 × 10 over points 1e5 apart, each case from a guest: all drawn solid, and a clean visitor loads each in under ${base0.ready + 2000} ms (an empty board: ${base0.ready} ms) ${JSON.stringify(res.map((x) => `${x.name}: ${JSON.stringify(x.kept)} ${x.ready} ms, block ${x.gap}`))}`);
-  // the link's hatched-area budget measures lines by their points too: 300 closed lines 2,000 across, each declaring 10 × 10
+  // the link's hatched-area budget (200 × 2,000 × 2,000) measures lines by their points too: 1,000 closed lines 1,000
+  // across, each declaring 10 × 10, are worth 1,250 such boxes' area, so at most 800 keep their hatching
   const A = await board(PORT, "area");
-  await A.scene("guest", Array.from({ length: 300 }, (_, i) => closed("ar", i, 2000))); await sleep(800);
+  await A.scene("guest", Array.from({ length: 1000 }, (_, i) => closed("ar", i, 1000))); await sleep(800);
   const ar = sceneOf(A.dir).filter((e) => /^ar\d+$/.test(e.id)), arHatched = ar.filter((e) => e.fillStyle !== "solid").length, va = await visit(PORT);
-  ok(ar.length === 300 && arHatched <= 200 && va.ready > 0 && va.ready < base0.ready + 2000,
-    `N1-r4b the link's hatched-area budget counts a closed line by its points: of 300 lines 2,000 across that declare 10 × 10, ${arHatched} keep their hatching, and a clean visitor loads in ${va.ready} ms`);
+  ok(ar.length === 1000 && arHatched <= 800 && va.ready > 0 && va.ready < base0.ready + 2000,
+    `N1-r4b the link's hatched-area budget counts a closed line by its points: of 1,000 lines 1,000 across that declare 10 × 10, ${arHatched} keep their hatching, and a clean visitor loads in ${va.ready} ms`);
   await A.stop();
   // planted in scene.json (or kept from before a restart): cleaned at startup; a small "dashed" box goes solid too
   const seed = S.readBoard(SAMPLE).elements;
@@ -66,6 +67,26 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   const pg = await Promise.race([page.evaluate(() => { const els = window.__excalidrawAPI.getSceneElements().filter((e) => /^(f\dx|ln)\d+$/.test(e.id)); return { n: els.length, patterned: els.filter((e) => e.fillStyle !== "solid").length }; }).catch((e) => ({ error: e.message })), sleep(15000).then(() => "HUNG")]);
   ok(pg !== "HUNG" && pg.n === 200 && pg.patterned === 0, `N1-r4d an open page that gets 200 of them, every kind, draws each one solid and keeps answering (${JSON.stringify(pg)})`);
   await kill(b); await Q.stop();
+}
+
+/* N1 by count with solid fills: at most 200 very large shapes through the link (1,000 boxes 1e5 wide took 22 s to load) */
+{
+  const huge = (tag, i, type = "rectangle") => ({ ...base, id: `${tag}${i}`, type, fillStyle: "solid", seed: i + 1 });
+  const postAll = async (B, who, list) => { let took = 0; for (let k = 0; k < list.length; k += 1250) { took += json(await B.scene(who, list.slice(k, k + 1250)))?.took || 0; await sleep(600); } return took; };
+  const B = await board(PORT, "big");
+  await postAll(B, "guest", Array.from({ length: 1000 }, (_, i) => huge("hb", i))); await sleep(800);
+  const kept = sceneOf(B.dir).filter((e) => /^hb\d+$/.test(e.id)).length, v = await visit(PORT);
+  ok(kept <= 200 && v.ready > 0 && v.ready < 5000, `N1-r4e of 1,000 solid boxes 1e5 wide from a guest, ${kept} are taken, and a clean visitor loads in ${v.ready} ms (longest block ${v.gap} ms)`);
+  const own = await postAll(B, "home", Array.from({ length: 300 }, (_, i) => huge("ob", i)));
+  ok(own === 300, `N1-r4f this computer's very large shapes aren't counted: ${own} of 300 taken after the guest's 200`);
+  await B.stop();
+  // the most a guest can add under the cap: 200 ellipses at the largest size, and 2,300 just under the line (1,000)
+  const W = await board(PORT, "worst");
+  const took = await postAll(W, "guest", [...Array.from({ length: 200 }, (_, i) => huge("wh", i, "ellipse")),
+    ...Array.from({ length: 2300 }, (_, i) => ({ ...base, id: `wm${i}`, type: "ellipse", fillStyle: "solid", x: (i % 50) * 100 - 2500, y: Math.floor(i / 50) * 100 - 2500, width: 1000, height: 1000, seed: i + 1 }))]);
+  const vw = await visit(PORT);
+  ok(took === 2500 && vw.ready > 0 && vw.ready < 5000, `N1-r4g the most a guest can add (200 ellipses 1e5 wide and 2,300 ellipses 1,000 wide; ${took} taken) loads in a clean visitor in ${vw.ready} ms`);
+  await W.stop();
 }
 
 /* S2 (item 2): hard links in .sketchcall/ (r4-sym.mjs) */
@@ -177,7 +198,8 @@ const flat = (e) => e.fillStyle === "solid" || (e.fillStyle === undefined && e.i
   const one = await B.post("guest", "/api/files", { c: B.guest.c, name: "Alex", files: [{ id: "big1", dataURL: png(5e6) }] });
   const two = await B.post("guest", "/api/files", { c: B.guest.c, name: "Alex", files: [{ id: "big2", dataURL: png(5e6) }] });
   let kept = []; try { kept = fs.readdirSync(path.join(S.files(B.dir).live, "files")); } catch { /* none kept */ }
-  ok(one.status === 200 && (json(one)?.took || []).includes("big1") && kept.includes("big1.png") && two.status === 429,
+  // refused: 429, or the connection closed under a client still sending (the server answers and hangs up), as in R4b
+  ok(one.status === 200 && (json(one)?.took || []).includes("big1") && kept.includes("big1.png") && (two.status === 429 || two.status === 0) && !kept.includes("big2.png") && await alive(PORT2),
     `P1 a guest's 5 MB picture goes through when their budget is idle (${one.status}, kept: ${kept.join(", ") || "none"}), and a second one straight after is told to wait (${two.status})`);
   await B.stop();
 }

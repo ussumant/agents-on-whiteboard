@@ -469,15 +469,22 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const HATCH_AREA = 200 * HATCH_MAX * HATCH_MAX, hatchArea = new Map();
   let hatchSum = 0;
   const hatchOf = (e, far) => { if (!far || !HATCH.has(e.fillStyle)) return 0; const [w, h] = extent(e); return w * h; };
+  // The link's very large shapes (over 1,000 wide or tall; a line by its points): at most 200, and past that its new ones
+  // aren't taken. Shapes drawn on this computer aren't counted. Many of the largest shapes slowed every new tab, solid or
+  // not: 1,000 boxes 100,000 wide took 22 s to load, and 200 such ellipses with 2,300 more 2,000 wide took 24 s. With at
+  // most 200 over 1,000, the rest of the link's 2,500 no bigger, the slowest measured was 3.5 s.
+  const BIG = 1000, BIG_MAX = 200, bigLink = new Set();
+  const isBig = e => !e.isDeleted && extent(e).some(v => v > BIG);
   const put = (e, size, far = false) => {
     const old = sizes.get(e.id) || 0, a = hatchOf(e, far);
     hatchSum += a - (hatchArea.get(e.id) || 0); if (a) hatchArea.set(e.id, a); else hatchArea.delete(e.id);
+    if (far && isBig(e)) bigLink.add(e.id); else bigLink.delete(e.id);
     sceneBytes += size - old;
     if (linkSide.has(e.id)) linkBytes -= old;
     if (far) { linkSide.add(e.id); linkBytes += size; } else linkSide.delete(e.id);
     sizes.set(e.id, size); els.set(e.id, e);
   };
-  const drop = id => { const sz = sizes.get(id) || 0; sceneBytes -= sz; hatchSum -= hatchArea.get(id) || 0; hatchArea.delete(id); if (linkSide.delete(id)) linkBytes -= sz; sizes.delete(id); els.delete(id); };
+  const drop = id => { const sz = sizes.get(id) || 0; sceneBytes -= sz; hatchSum -= hatchArea.get(id) || 0; hatchArea.delete(id); bigLink.delete(id); if (linkSide.delete(id)) linkBytes -= sz; sizes.delete(id); els.delete(id); };
   // Room for one element of a post. The oldest deleted elements make room, listed once per post (listing them for every
   // element of a 100,000-element post on a full board held the server for seconds).
   const roomFor = () => {
@@ -809,6 +816,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
           if (!okElement(e, known) || !newer(e, els.get(e.id))) continue;
           let c = cleanElement(e);
           if (far && hatchOf(c, true) && hatchSum - (hatchArea.get(c.id) || 0) + hatchOf(c, true) > HATCH_AREA) c = { ...c, fillStyle: 'solid' };
+          if (far && isBig(c) && !bigLink.has(c.id) && bigLink.size >= BIG_MAX) continue;
           const size = JSON.stringify(c).length;
           if (size > ELEMENT_MAX(c) || !room(c.id, size, far)) continue;
           put(c, size, far); by.set(c.id, who); took.push(c); bytes += size;
