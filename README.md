@@ -1,4 +1,4 @@
-# whiteboard-agents
+# agents-on-whiteboard
 
 **Comment on a whiteboard. Your coding agent answers on it.**
 
@@ -17,49 +17,49 @@ You need Node 20 or later.
 In a Claude Code session:
 
 ```
-/plugin install whiteboard-agents --marketplace ussumant/whiteboard-agents
+/plugin install agents-on-whiteboard --marketplace ussumant/agents-on-whiteboard
 ```
 
 Or from your shell:
 
 ```
-claude plugin install whiteboard-agents --marketplace ussumant/whiteboard-agents
+claude plugin install agents-on-whiteboard --marketplace ussumant/agents-on-whiteboard
 ```
 
 Those one-line forms need a recent Claude Code (2.1.275 or later in a session, 2.1.292 or later in the shell). On an older one, add the marketplace first, then install from it:
 
 ```
-claude plugin marketplace add ussumant/whiteboard-agents
-claude plugin install whiteboard-agents@whiteboard-agents
+claude plugin marketplace add ussumant/agents-on-whiteboard
+claude plugin install agents-on-whiteboard@agents-on-whiteboard
 ```
 
 Then, in the folder with your diagram, ask Claude:
 
-> Open a whiteboard-agents board here and answer my comments on it.
+> Open an agents-on-whiteboard board here and answer my comments on it.
 
 Your browser opens on the board, and Claude waits for your first comment. With no `.excalidraw` file in the folder, the board starts from a sample.
 
 ### Any agent: `npx` and the MCP server
 
 ```
-npx whiteboard-agents open
+npx agents-on-whiteboard open
 ```
 
 That starts the board and opens your browser. Add the MCP server to your agent once:
 
 ```
-claude mcp add whiteboard-agents -- npx -y whiteboard-agents mcp     # Claude Code
-codex mcp add whiteboard-agents -- npx -y whiteboard-agents mcp      # Codex
+claude mcp add agents-on-whiteboard -- npx -y agents-on-whiteboard mcp     # Claude Code
+codex mcp add agents-on-whiteboard -- npx -y agents-on-whiteboard mcp      # Codex
 ```
 
-Then tell it: *Open the whiteboard-agents board in this folder and answer my comments on it.*
+Then tell it: *Open the agents-on-whiteboard board in this folder and answer my comments on it.*
 
 ### Codex, Cursor and other MCP clients: `board_wait`
 
 In Cursor, add this to `.cursor/mcp.json`:
 
 ```json
-{ "mcpServers": { "whiteboard-agents": { "command": "npx", "args": ["-y", "whiteboard-agents", "mcp"] } } }
+{ "mcpServers": { "agents-on-whiteboard": { "command": "npx", "args": ["-y", "agents-on-whiteboard", "mcp"] } } }
 ```
 
 These agents hear you through `board_wait`. It returns your next comment as soon as you send it, or `{"timeout": true}` after 50 seconds, and the agent calls it again. While it waits, the server sends progress, so the client doesn't drop the call. Comments wait for the agent from `board_open` on, and yours (from this computer) come first and are never dropped. Through the share link, only the newest 500 wait; the next result says how many older ones were dropped, and the record still has them.
@@ -69,18 +69,18 @@ These agents hear you through `board_wait`. It returns your next comment as soon
 Any agent that can run a command can take part, from the board's folder:
 
 ```
-npx whiteboard-agents wait                            # sleeps until your next comment, prints it as JSON, exits
-npx whiteboard-agents say "..." --reply-to <its id>   # answers on the same box
-npx whiteboard-agents wait --since <its id>           # the next one, even if it came in while you were replying (yours first)
+npx agents-on-whiteboard wait                            # sleeps until your next comment, prints it as JSON, exits
+npx agents-on-whiteboard say "..." --reply-to <its id>   # answers on the same box
+npx agents-on-whiteboard wait --since <its id>           # the next one, even if it came in while you were replying (yours first)
 ```
 
 ## How it works
 
-- `whiteboard-agents open` starts a small server on 127.0.0.1, so only this computer can reach it, and opens the board in your browser. The board is any `.excalidraw` file. The call is kept in `.whiteboard-agents/` beside it: `thread.jsonl` (every comment, reply and drawing), `events.log` (one readable line per comment, canvas edit and tour move), `scene.json` (the board as it is now) and `files/` (pictures you paste). The folder gets its own `.gitignore`, so the call stays out of git. The server won't start if anything in `.whiteboard-agents/` is a symbolic link, a hard link (a file with a second name somewhere else) or anything other than a file or folder, and says which one. It checks again on every file it opens.
+- `agents-on-whiteboard open` starts a small server on 127.0.0.1, so only this computer can reach it, and opens the board in your browser. The board is any `.excalidraw` file. The call is kept in `.agents-on-whiteboard/` beside it: `thread.jsonl` (every comment, reply and drawing), `events.log` (one readable line per comment, canvas edit and tour move), `scene.json` (the board as it is now) and `files/` (pictures you paste). The folder gets its own `.gitignore`, so the call stays out of git. The server won't start if anything in `.agents-on-whiteboard/` is a symbolic link, a hard link (a file with a second name somewhere else) or anything other than a file or folder, and says which one. It checks again on every file it opens.
 - You click a box, or drag over an area, and type. The comment is saved with what it's about.
-- Your agent hears it through `board_wait`, `whiteboard-agents wait`, or a Claude Code channel push if you start the server with `mcp --channels`. There's no timer: the waits watch the record file, so a comment reaches the agent within a fraction of a second.
+- Your agent hears it through `board_wait`, `agents-on-whiteboard wait`, or a Claude Code channel push if you start the server with `mcp --channels`. There's no timer: the waits watch the record file, so a comment reaches the agent within a fraction of a second.
 - The agent answers with `board_say`, and the reply shows under your comment and on the box. It can point (`board_point`), draw (`board_note`, `board_arrow`, `board_edit`, `board_delete`) and present a guided tour (`board_tour`, `board_tour_step`), with ✓ keep / ✎ change on any step it asks about.
-- Everyone with the board open sees the same board live: edits, cursors and the agent's pointer. Undo only takes back your own changes. `whiteboard-agents record` prints the whole call as Markdown.
+- Everyone with the board open sees the same board live: edits, cursors and the agent's pointer. Undo only takes back your own changes. `agents-on-whiteboard record` prints the whole call as Markdown.
 
 ## Comments are data
 
@@ -91,10 +91,10 @@ The MCP server tells the agent to treat comments as discussion about the diagram
 ## Sharing the board
 
 ```
-whiteboard-agents share
+agents-on-whiteboard share
 ```
 
-`share` opens the running board to teammates through a Cloudflare quick tunnel. It needs `cloudflared`, and prints the install line if you don't have it. The link carries a secret key and works until you press Ctrl-C or run `whiteboard-agents unshare`. Before the link opens, `share` keeps a copy of the board in `.whiteboard-agents/scene.before-share-<time>.json`.
+`share` opens the running board to teammates through a Cloudflare quick tunnel. It needs `cloudflared`, and prints the install line if you don't have it. The link carries a secret key and works until you press Ctrl-C or run `agents-on-whiteboard unshare`. Before the link opens, `share` keeps a copy of the board in `.agents-on-whiteboard/scene.before-share-<time>.json`.
 
 A guest with the link can:
 
@@ -123,12 +123,12 @@ Websites open in your browser can't write to the board, read it or frame it, whe
 | `record` | Print every comment and its reply as Markdown. |
 | `mcp` | Run the MCP server (`board_open`, `board_wait`, `board_say` and the rest). |
 
-`whiteboard-agents --help` lists every option.
+`agents-on-whiteboard --help` lists every option.
 
 ## Known limits
 
 - **A share link is edit access.** Anyone with the link can change or delete anything on the board. They can also lock an element by giving it a very high version number (the server takes versions up to a billion). Share it only with people you'd hand the file to.
-- **A killed `share` can leave its link open.** If `share` is killed with SIGKILL, `share.json` stays behind and `cloudflared` can keep running. The server treats the link as closed while that process id is dead, but if the system hands the id to a new process, the old link works again. `whiteboard-agents unshare` closes it; it also signals whatever process has that id now. Run `unshare` after a crash.
+- **A killed `share` can leave its link open.** If `share` is killed with SIGKILL, `share.json` stays behind and `cloudflared` can keep running. The server treats the link as closed while that process id is dead, but if the system hands the id to a new process, the old link works again. `agents-on-whiteboard unshare` closes it; it also signals whatever process has that id now. Run `unshare` after a crash.
 - **Part of Excalidraw isn't pinned.** The page's three script tags carry integrity hashes. Excalidraw then loads more scripts and its fonts from unpkg.com while it runs, and those can't be pinned the same way. The page sends no Content-Security-Policy beyond `frame-ancestors`.
 - **No embeds.** Excalidraw's embed tool (a website or a video inside the board) is turned off.
 - **A board has a size.** At most 5,000 elements (deleted ones count, and the oldest deleted ones make room) and 20 MB. One element is at most 64 KB, and a line or freehand stroke at most 10,000 points. Past that, new elements aren't saved or shared. Text over 10,000 characters in one element isn't kept either. Hatched, cross-hatched and zigzag fills on a shape over 2,000 wide or tall are drawn solid, since they are slow to draw at that size. Other fill patterns (dots, dashed, zigzag-line) are always drawn solid, and a line or freehand stroke is measured by its points.

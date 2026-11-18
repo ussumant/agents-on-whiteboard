@@ -1,12 +1,12 @@
 {
-  "name": "whiteboard-agents",
+  "name": "agents-on-whiteboard",
   "description": "A live whiteboard call with your coding agent.",
   "owner": {
-    "name": "whiteboard-agents contributors"
+    "name": "agents-on-whiteboard contributors"
   },
   "plugins": [
     {
-      "name": "whiteboard-agents",
+      "name": "agents-on-whiteboard",
       "source": "./",
       "description": "Comment on a whiteboard. Your coding agent answers on it."
     }

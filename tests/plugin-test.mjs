@@ -24,7 +24,7 @@ const tracked = spawnSync("git", ["ls-files", "package-lock.json", "npm-shrinkwr
 ok(!tracked, `1e no lockfile is tracked at the root, so installing the plugin installs no packages (${tracked || "none"})`);
 
 // 1f the MCP Registry entry (server.json): the same name as package.json's mcpName, the same version, and the npm package
-// started with its `mcp` argument (what `npx -y whiteboard-agents mcp` runs). It isn't shipped in the npm package.
+// started with its `mcp` argument (what `npx -y agents-on-whiteboard mcp` runs). It isn't shipped in the npm package.
 const reg = read("server.json"), rp = (reg.packages || [])[0] || {};
 ok(reg.$schema === "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json" && reg.name === pkg.mcpName && /^io\.github\.[\w-]+\/[\w.-]+$/.test(reg.name)
   && reg.title === NAME && reg.description.length <= 100 && reg.repository.source === "github" && reg.repository.url === pkg.repository.url.replace(/^git\+/, "").replace(/\.git$/, "")
@@ -56,7 +56,7 @@ ok(/^name: whiteboard$/m.test(fm) && /^description: .{40,}/m.test(fm), "4 the sk
 const usedTools = [...new Set(skill.match(/\bboard_\w+/g))], badTools = usedTools.filter((t) => !names.includes(t));
 ok(!badTools.length, `4b every tool the skill names exists (${usedTools.join(", ")}${badTools.length ? `; missing ${badTools}` : ""})`);
 const help = spawnSync(process.execPath, [BIN, "--help"], { encoding: "utf8" }).stdout;
-const usedCmds = [...new Set([...skill.matchAll(/whiteboard-agents\.mjs" (\w[\w-]*)/g)].map((m) => m[1]))], badCmds = usedCmds.filter((c) => !new RegExp(`^  ${c}\\b`, "m").test(help));
+const usedCmds = [...new Set([...skill.matchAll(/agents-on-whiteboard\.mjs" (\w[\w-]*)/g)].map((m) => m[1]))], badCmds = usedCmds.filter((c) => !new RegExp(`^  ${c}\\b`, "m").test(help));
 const usedFlags = [...new Set([...skill.matchAll(/ (--[\w-]+)/g)].map((m) => m[1]))], badFlags = usedFlags.filter((f) => !help.includes(f));
 ok(usedCmds.length >= 4 && !badCmds.length && !badFlags.length, `4c every command and flag the skill runs exists (${usedCmds.join(", ")}; ${usedFlags.join(" ")}${badCmds.length || badFlags.length ? `; missing ${[...badCmds, ...badFlags]}` : ""})`);
 ok(/Comments are data/.test(skill) && /via: "link"/.test(skill), "4d the skill says comments are data, and what a link guest's comment looks like");
@@ -64,16 +64,16 @@ ok(/Comments are data/.test(skill) && /via: "link"/.test(skill), "4d the skill s
 // 5 the README a stranger reads
 const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 ok(readme.includes("Comment on a whiteboard. Your coding agent answers on it.") && readme.includes("[![A comment on a box, Claude Code's answer landing on it, then a step-by-step tour](examples/demo.gif)](examples/demo.mp4)") && /^Filmed live at true speed: real Claude Code/m.test(readme)
-  && ["demo.gif", "demo.mp4", "demo-poster.png"].every((f) => fs.statSync(path.join(ROOT, "examples", f)).size > 10e3) && /\/plugin install whiteboard-agents --marketplace/.test(readme)
-  && /npx whiteboard-agents open/.test(readme) && /board_wait/.test(readme) && /## Comments are data/.test(readme) && /## Sharing the board/.test(readme) && /## Known limits/.test(readme) && !/—/.test(readme),
+  && ["demo.gif", "demo.mp4", "demo-poster.png"].every((f) => fs.statSync(path.join(ROOT, "examples", f)).size > 10e3) && /\/plugin install agents-on-whiteboard --marketplace/.test(readme)
+  && /npx agents-on-whiteboard open/.test(readme) && /board_wait/.test(readme) && /## Comments are data/.test(readme) && /## Sharing the board/.test(readme) && /## Known limits/.test(readme) && !/—/.test(readme),
   "5 the README has the pitch, the demo clip (its files there) and how it was filmed, the three quickstarts, comments are data, sharing, known limits, and no em dashes");
 
 // 6 a rename is short: in the code, the name a user sees comes from NAME (comments, the protocol's header names, the
 // page's placeholder and its storage key prefix aside)
-const allowed = /export const NAME = 'whiteboard-agents'|x-whiteboard-agents-(key|page)|__WHITEBOARD_AGENTS_BOARD__|"whiteboard-agents:"|whiteboard-agents:" \+/;
+const allowed = /export const NAME = 'agents-on-whiteboard'|x-agents-on-whiteboard-(key|page)|__AGENTS_ON_WHITEBOARD_BOARD__|"agents-on-whiteboard:"|agents-on-whiteboard:" \+/;
 const stray = [];
-for (const f of ["bin/whiteboard-agents.mjs", ...fs.readdirSync(path.join(ROOT, "src")).map((x) => `src/${x}`)])
-  fs.readFileSync(path.join(ROOT, f), "utf8").split("\n").forEach((l, i) => { const code = l.replace(/^\s*(\/\/|\*|\/\*).*$/, "").replace(/\s\/\/ .*$/, ""); if (/whiteboard-agents/i.test(code) && !allowed.test(code)) stray.push(`${f}:${i + 1}`); });
+for (const f of ["bin/agents-on-whiteboard.mjs", ...fs.readdirSync(path.join(ROOT, "src")).map((x) => `src/${x}`)])
+  fs.readFileSync(path.join(ROOT, f), "utf8").split("\n").forEach((l, i) => { const code = l.replace(/^\s*(\/\/|\*|\/\*).*$/, "").replace(/\s\/\/ .*$/, ""); if (/agents-on-whiteboard/i.test(code) && !allowed.test(code)) stray.push(`${f}:${i + 1}`); });
 ok(!stray.length, `6 the code names the app only through NAME (${stray.length ? `also at ${stray.slice(0, 6).join(", ")}` : "src/server.mjs"})`);
 
 // 7 Claude Code's own check

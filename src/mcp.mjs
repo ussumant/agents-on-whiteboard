@@ -1,9 +1,9 @@
-// The live call as MCP tools: the agent answers and draws with board_* tools instead of `whiteboard-agents say/op`.
-//   claude mcp add whiteboard-agents -- npx -y whiteboard-agents mcp
-//   codex mcp add whiteboard-agents -- npx -y whiteboard-agents mcp
+// The live call as MCP tools: the agent answers and draws with board_* tools instead of `agents-on-whiteboard say/op`.
+//   claude mcp add agents-on-whiteboard -- npx -y agents-on-whiteboard mcp
+//   codex mcp add agents-on-whiteboard -- npx -y agents-on-whiteboard mcp
 // With --channels, each comment or canvas edit the person makes is also pushed into a Claude Code session as a
-// <channel source="whiteboard-agents"> message. Channels are a Claude Code research preview: a server like this one needs
-//   claude --dangerously-load-development-channels server:whiteboard-agents
+// <channel source="agents-on-whiteboard"> message. Channels are a Claude Code research preview: a server like this one needs
+//   claude --dangerously-load-development-channels server:agents-on-whiteboard
 // so the push is off unless asked for.
 // Hand-rolled JSON-RPC over stdio, no SDK: a channel push is one JSON line on stdout, and a dependency would cost more
 // than the ~40 lines of protocol.

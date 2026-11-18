@@ -113,7 +113,7 @@ const state = (p) => Promise.race([p.evaluate(() => ({ ready: window.__board.rea
   const pres = await B.post("home", "/api/presence", { c: B.home.c, pointer: { x: 1, y: 1 } });
   const t = sceneOf(B.dir).find((e) => e.id === "api__title");
   const save = json(await B.scene("home", [{ ...t, text: "owner edit after the flood", originalText: "owner edit after the flood", version: t.version + 1 }]));
-  const pollR = await hit(PORT, `/api/changes?c=${B.home.c}&since=-1&name=`, { headers: { "x-whiteboard-agents-key": B.home.key, "x-whiteboard-agents-page": B.home.secret, origin: `http://localhost:${PORT}` } });
+  const pollR = await hit(PORT, `/api/changes?c=${B.home.c}&since=-1&name=`, { headers: { "x-agents-on-whiteboard-key": B.home.key, "x-agents-on-whiteboard-page": B.home.secret, origin: `http://localhost:${PORT}` } });
   ok(pres.status === 200 && save && save.took === 1 && pollR.status === 200 && served <= 61 && refused >= 939, `R1 after 1,000 link page loads in ${ms} ms (${served} served, ${refused} refused), the owner's page still points, saves (took ${save && save.took}) and polls`);
   await B.stop();
 }

@@ -14,7 +14,7 @@ const read = (f) => fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "";
 const srv = await serveBoard(D, PORT);
 const stepsFile = path.join(D, "steps.json");
 fs.writeFileSync(stepsFile, JSON.stringify({ title: "Check", steps: [{ target: "api", title: "The API", text: "It checks the cart.", ask: { question: "Keep it?" } }] }));
-const tour = JSON.parse(execFileSync(process.execPath, [path.join(ROOT, "bin", "whiteboard-agents.mjs"), "tour", stepsFile], { cwd: D }).toString());
+const tour = JSON.parse(execFileSync(process.execPath, [path.join(ROOT, "bin", "agents-on-whiteboard.mjs"), "tour", stepsFile], { cwd: D }).toString());
 const M = mcpSession(["--channels"]);
 await M.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "xsite-test", version: "0" } });
 M.notify("notifications/initialized");

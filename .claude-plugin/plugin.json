@@ -1,18 +1,18 @@
 {
-  "name": "whiteboard-agents",
-  "displayName": "whiteboard-agents",
+  "name": "agents-on-whiteboard",
+  "displayName": "agents-on-whiteboard",
   "description": "Comment on a whiteboard. Your coding agent answers on it: a live Excalidraw board on your own computer, where Claude hears each comment and replies beside the box it is about.",
   "author": {
-    "name": "whiteboard-agents contributors"
+    "name": "agents-on-whiteboard contributors"
   },
-  "homepage": "https://github.com/ussumant/whiteboard-agents#readme",
-  "repository": "https://github.com/ussumant/whiteboard-agents",
+  "homepage": "https://github.com/ussumant/agents-on-whiteboard#readme",
+  "repository": "https://github.com/ussumant/agents-on-whiteboard",
   "license": "MIT",
   "keywords": ["excalidraw", "whiteboard", "mcp", "diagram", "collaboration"],
   "mcpServers": {
-    "whiteboard-agents": {
+    "agents-on-whiteboard": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/whiteboard-agents.mjs", "mcp"]
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/agents-on-whiteboard.mjs", "mcp"]
     }
   }
 }

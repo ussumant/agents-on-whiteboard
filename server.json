@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.ussumant/whiteboard-agents",
-  "title": "whiteboard-agents",
+  "name": "io.github.ussumant/agents-on-whiteboard",
+  "title": "agents-on-whiteboard",
   "description": "Comment on a whiteboard, and your coding agent answers on it: a live Excalidraw board.",
   "repository": {
-    "url": "https://github.com/ussumant/whiteboard-agents",
+    "url": "https://github.com/ussumant/agents-on-whiteboard",
     "source": "github"
   },
   "version": "0.1.0",
   "packages": [
     {
       "registryType": "npm",
-      "identifier": "whiteboard-agents",
+      "identifier": "agents-on-whiteboard",
       "version": "0.1.0",
       "transport": {
         "type": "stdio"

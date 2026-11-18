@@ -29,11 +29,11 @@ const D1 = scratch("open"), s1 = await serveBoard(D1, P1);
 const A = await open(P1);
 ok(A.ready, "1 the sample board loads and __board.ready is true");
 ok(same(await scene(A), sample.elements), `1b it shows the file's elements as they are (${(await scene(A)).length} of ${sample.elements.length})`);
-ok((await A.title()) === "pizza · whiteboard-agents", `1c the tab is named after the file ("${await A.title()}")`);
+ok((await A.title()) === "pizza · agents-on-whiteboard", `1c the tab is named after the file ("${await A.title()}")`);
 ok((await A.evaluate(() => __board.walkButtons())).length === 0, "1d no frames, no walk buttons");
 
 // 2 Export, pressed like a person, through the browser's own download
-const DL = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-download-"));
+const DL = fs.mkdtempSync(path.join(os.tmpdir(), "agents-on-whiteboard-download-"));
 const cdp = await b.target().createCDPSession();
 await cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: DL, eventsEnabled: true });
 await A.click("#exportBtn");
@@ -46,7 +46,7 @@ ok(!A.errs.length, `2c no console errors ${JSON.stringify(A.errs.slice(0, 3))}`)
 s1.kill(); await sleep(300);
 
 // 3 the download loads back as a board
-const D2 = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-roundtrip-"));
+const D2 = fs.mkdtempSync(path.join(os.tmpdir(), "agents-on-whiteboard-roundtrip-"));
 if (exported) fs.copyFileSync(file, path.join(D2, "pizza.excalidraw"));
 const s2 = await serveBoard(D2, P2);
 const R = await open(P2);
@@ -57,13 +57,13 @@ s2.kill(); await sleep(300);
 // 4 a board with frames: one walk button per frame, in the file's order, and each frames its own part of the board
 const base = sample.elements.find((e) => e.type === "rectangle");
 const el = (o) => ({ ...base, groupIds: [], boundElements: [], frameId: null, seed: 7, versionNonce: 7, version: 1, ...o });
-const framed = { type: "excalidraw", version: 2, source: "whiteboard-agents", files: {}, appState: { viewBackgroundColor: "#ffffff" }, elements: [
+const framed = { type: "excalidraw", version: 2, source: "agents-on-whiteboard", files: {}, appState: { viewBackgroundColor: "#ffffff" }, elements: [
   el({ id: "f1", type: "frame", name: "Ordering", x: 0, y: 0, width: 400, height: 300, roundness: null, backgroundColor: "transparent" }),
   el({ id: "b1", x: 60, y: 80, width: 200, height: 100, frameId: "f1" }),
   el({ id: "f2", type: "frame", name: "Cooking", x: 1600, y: 900, width: 400, height: 300, roundness: null, backgroundColor: "transparent" }),
   el({ id: "b2", x: 1660, y: 980, width: 200, height: 100, frameId: "f2" }),
 ] };
-const D3 = fs.mkdtempSync(path.join(os.tmpdir(), "whiteboard-agents-frames-"));
+const D3 = fs.mkdtempSync(path.join(os.tmpdir(), "agents-on-whiteboard-frames-"));
 fs.writeFileSync(path.join(D3, "kitchen.excalidraw"), JSON.stringify(framed));
 const s3 = await serveBoard(D3, P2);
 const F = await open(P2);

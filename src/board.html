@@ -14,11 +14,11 @@
 (function () {
   /* The board's name and key, put here by the server (src/server.mjs). Browser storage is keyed per board, so two boards
      served on one port never mix. A page opened as a plain file has neither. */
-  var BOARD = "__WHITEBOARD_AGENTS_BOARD__";
+  var BOARD = "__AGENTS_ON_WHITEBOARD_BOARD__";
   if (!BOARD || typeof BOARD !== "object") BOARD = { key: "local", name: "board" };
   window.__boardInfo = BOARD;
   document.title = BOARD.app ? BOARD.name + " · " + BOARD.app : BOARD.name;   // the app's name comes from the server
-  window.PERSISTENCE_KEY = "whiteboard-agents:" + BOARD.key;
+  window.PERSISTENCE_KEY = "agents-on-whiteboard:" + BOARD.key;
   window.__BOARD_ELEMENTS_KEY = window.PERSISTENCE_KEY + ":elements";
   window.__BOARD_APPSTATE_KEY = window.PERSISTENCE_KEY + ":appstate";
   window.__board = { ready: false, error: null };
@@ -559,7 +559,7 @@ const live = (() => {
   // The page id and its secret come from the server with the page: the id is how the room knows this page, the secret
   // is what lets a call act as it.
   const INFO = window.__boardInfo || {};
-  const KEY = { "x-whiteboard-agents-key": String(INFO.token || ""), "x-whiteboard-agents-page": String(INFO.pageKey || "") }, WRITE = { "content-type": "application/json", ...KEY };
+  const KEY = { "x-agents-on-whiteboard-key": String(INFO.token || ""), "x-agents-on-whiteboard-page": String(INFO.pageKey || "") }, WRITE = { "content-type": "application/json", ...KEY };
   // Who this page is: a name typed once (kept in localStorage), ?name=, or "You", the person at this computer. A shared
   // link's key (?k=) is a cookie by now, so it leaves the address bar.
   const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname), NAME_KEY = "board:name", cid = String(INFO.page || Math.random().toString(36).slice(2, 10));

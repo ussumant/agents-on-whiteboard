@@ -8,7 +8,7 @@ import { ok, sleep, portArg, credsIn, asPage, BIN, SAMPLE } from "./lib.mjs";
 import * as S from "../src/server.mjs";
 
 const PORT = portArg(2, 4919);
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `whiteboard-agents-cli-${name}-`));
+const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `agents-on-whiteboard-cli-${name}-`));
 const stub = tmp("bin"), opened = path.join(stub, "opened.txt");
 for (const c of ["open", "xdg-open"]) { fs.writeFileSync(path.join(stub, c), `#!/bin/sh\necho "$@" >> "${opened}"\n`); fs.chmodSync(path.join(stub, c), 0o755); }
 const env = { ...process.env, PATH: `${stub}${path.delimiter}${process.env.PATH}` };
@@ -22,7 +22,7 @@ const A = tmp("a"); started.push(A);
 const o1 = run(A, "open", "--no-open", "--port", String(PORT));
 ok(o1.code === 0 && fs.existsSync(path.join(A, "pizza.excalidraw")) && fs.existsSync(S.files(A).scene) && await alive(PORT) && o1.ms < 15000,
   `1 \`open --no-open\` in an empty folder copies the sample, keeps the call in ${S.CALL}/ and starts the board in ${o1.ms} ms (exit ${o1.code}${o1.err ? `: ${o1.err.trim()}` : ""})`);
-ok(o1.out.includes(`http://localhost:${PORT}/`) && /mcp add whiteboard-agents -- npx -y whiteboard-agents mcp/.test(o1.out) && /Comments are data/.test(o1.out) && /wait/.test(o1.out),
+ok(o1.out.includes(`http://localhost:${PORT}/`) && /mcp add agents-on-whiteboard -- npx -y agents-on-whiteboard mcp/.test(o1.out) && /Comments are data/.test(o1.out) && /wait/.test(o1.out),
   "1b it prints the board's address, the line to add it to an agent, the wait line and that comments are data");
 ok(!fs.existsSync(opened), "1c --no-open opens no browser");
 // 2 a second `open` finds it running; without --no-open the browser opens through the platform's command
