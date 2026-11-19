@@ -21,6 +21,11 @@ const areaOf = on => on?.rect && ['x', 'y', 'w', 'h'].every(k => Number.isFinite
 const pack = (id, content, meta) => ({ id, content: text(content),
   meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, field(v, k)]).filter(([, v]) => v !== '')) });
 
+// A reply in a comment thread says which comment it answers (reply_to) and which thread it is in (thread_id, the id of the
+// thread's first comment), so the agent answers in that thread with board_say reply_to=<this comment's id>. An agent's
+// reply records no thread_id; the comment it answers stands in for it.
+const inThread = it => it.reply_to ? { reply_to: idOf(it.reply_to), thread_id: idOf(it.thread_id ?? it.reply_to) } : {};
+
 // One record line as an event for the session presenting as `me`, or null. `source` is "thread" or "canvas".
 export function eventOf(source, it, board, me) {
   if (!it || typeof it !== 'object') return null;
@@ -44,11 +49,11 @@ export function eventOf(source, it, board, me) {
     // words, and never a reply that names no one, so agents don't wake each other by talking.
     if (samePresenter(it.presenter, me) || !mentions(it.text, me)) return null;
     return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: presenterOf(it), via: 'agent', box_id: idOf(on?.id), box_label: on?.label,
-      box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
+      box_ids: idsOf(on?.ids), area: areaOf(on), ...inThread(it), ts: it.ts });
   }
   if (it.to && !samePresenter(it.to, me)) return null;   // the person picked another agent
   return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, to: it.to, box_id: idOf(on?.id), box_label: on?.label,
-    box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
+    box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ...inThread(it), ts: it.ts });
 }
 // The JSON an agent gets from `agents-on-whiteboard wait` and board_wait: the event's id, its fields, and the text.
 export const flatEvent = ev => ({ id: ev.id, ...ev.meta, content: ev.content });
