@@ -27,7 +27,7 @@ The board
                          Save the pictures in an exported board into the call's files.
 
 The agent
-  wait [--since <id>] [--timeout 30m]
+  wait [--since <id>] [--timeout 30m] [--team]
                          Wait for the person's next comment, answer or canvas writing, print it as
                          one JSON line and exit 0. Exit 2 if nothing came before the timeout.
                          --since <id> (the id in the last line you got) returns what came in after
@@ -48,13 +48,14 @@ The agent
 Options
   --dir <folder>         The board folder (default: the current folder). The call is kept in
                          its ${S.CALL}/ subfolder.
-  --presenter <name>     Who presents on say, point, tour and tour-step (default "Claude").
+  --presenter <name>     Who presents on say, point, tour and tour-step (default "Claude"): your own name, or a teammate's.
+  --team                 wait: run the board's team (Ada, Linus, Grace or their new names); each event says who it is "for".
   --help                 Show this.
 `;
 
 // Flags with a value, and flags without one. Everything else is a positional argument.
 const VAL = new Set(['--dir', '--port', '--seed', '--presenter', '--tour', '--on', '--reply-to', '--since', '--timeout']);
-const BOOL = new Set(['--channels', '--take-over', '--no-open', '--help', '-h']);
+const BOOL = new Set(['--channels', '--take-over', '--no-open', '--team', '--help', '-h']);
 const argv = process.argv.slice(2), opts = {}, pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -160,7 +161,7 @@ try {
       // skipped_guest_comments counts the share link's events before it: continuing --since from it passes over them (the
       // record still has them). Otherwise the oldest event comes first. Then it waits for the next one.
       let initial = true; const backlog = [];
-      stop = follow(board(), ev => { if (initial) backlog.push(ev); else finish(0, line(flatEvent(ev))); }, { me: opts.presenter, since: opts.since });
+      stop = follow(board(), ev => { if (initial) backlog.push(ev); else finish(0, line(flatEvent(ev))); }, { me: opts.presenter, since: opts.since, runsTeam: !!opts.team });
       initial = false;
       if (backlog.length) {
         const byTime = backlog.map((e, i) => [e, i]).sort(([a, i], [b, j]) => String(a.meta.ts).localeCompare(String(b.meta.ts)) || i - j).map(([e]) => e);

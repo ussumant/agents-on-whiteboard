@@ -303,6 +303,12 @@
     font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; padding: 4px 5px 5px 10px; border-radius: 0 0 8px 8px; }
   #followChip button { border: 0; background: rgba(255,255,255,.25); color: #fff; border-radius: 4px; cursor: pointer; font: inherit; padding: 2px 6px; }
   #onRow { display: flex; align-items: baseline; gap: 8px; } #onRow #on { flex: 1; min-width: 0; }
+  #agentMenu { position: fixed; z-index: 990; background: #fff; border: 1px solid #d0d0d0; border-radius: 8px; padding: 8px; width: 220px;
+    font: 13px/1.35 ui-sans-serif, system-ui, sans-serif; color: #1e1e1e; box-shadow: 0 2px 8px rgba(0,0,0,.12); }
+  #agentMenu .who { font-weight: 600; } #agentMenu .job { color: #868e96; font-size: 12px; margin: 2px 0 8px; }
+  #agentMenu .row { display: flex; gap: 6px; } #agentMenu button { font: inherit; border: 1px solid #d0d0d0; background: #fff; border-radius: 6px; padding: 3px 9px; cursor: pointer; }
+  #agentMenu input { font: inherit; width: 100%; box-sizing: border-box; border: 1px solid #d0d0d0; border-radius: 6px; padding: 3px 6px; margin-bottom: 6px; }
+  #agentMenu .err { color: #e03131; font-size: 12px; margin-top: 6px; }
   #toWrap { font-size: 12px; color: #868e96; white-space: nowrap; }
   #toWrap select { font: inherit; color: #1e1e1e; border: 1px solid #d0d0d0; border-radius: 4px; background: #fff; padding: 1px 2px; }
   .cptr.fading { opacity: 0; }
@@ -367,7 +373,7 @@
 <div id="laser"></div>
 <svg id="marks"></svg>
 <svg id="penInk"></svg><div id="penText"></div>
-<div id="agents" aria-label="Agents on the board"></div><div id="followFrame"></div><div id="followChip"><span></span><button type="button" title="Stop following (Esc)">✕</button></div>
+<div id="agents" aria-label="Agents on the board"></div><div id="agentMenu" hidden></div><div id="followFrame"></div><div id="followChip"><span></span><button type="button" title="Stop following (Esc)">✕</button></div>
 <div id="pins"></div>
 <svg id="spot" aria-hidden="true"><defs>
   <filter id="spotSoft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter>
@@ -1684,9 +1690,57 @@ const live = (() => {
   /* ---- who's on the board: the agents' avatars, top right, like Figma's. Click one to follow it: your camera goes to it
      and moves with its drawing and gestures (no one else's), a frame in its colour says so, and your comments go to it.
      Click it again, press Esc or scroll to stop. */
-  let followP = null, agentsKey = "";
+  let followP = null, agentsKey = "", crew = [];   // crew: the board's team, in order, the lead first
+  // The team, from the server, before the record is read, so its colours come first on every page alike.
+  async function loadTeam() {
+    try { const r = await fetch("/api/agents", { cache: "no-store" }); if (r.ok) setTeam((await r.json()).agents); } catch (e) { /* an older server: no team */ }
+  }
+  function setTeam(list) {
+    crew = (Array.isArray(list) ? list : []).filter((a) => a && typeof a.name === "string").map((a, i) => ({ name: presName(a.name), role: String(a.role || ""), about: String(a.about || ""), lead: i === 0 }));
+    for (const a of crew) { const q = ptrOf(a.name); q.seen = true; q.job = a; }
+    agentsKey = ""; drawAgents();
+  }
+  // A teammate renamed: its pointer, colour and avatar carry over to the new name. Old words keep the old name.
+  function teamOp(it) {
+    const r = it.renamed || {}, from = presName(r.from).toLowerCase(), q = ptrs.get(from);
+    if (q && r.to) { ptrs.delete(from); q.name = presName(r.to); q.tag.textContent = q.name; q.chat.querySelector("b").textContent = q.name; ptrs.set(q.name.toLowerCase(), q); if (q === followP) followAgent(q); }
+    if (Array.isArray(it.agents)) setTeam(it.agents.map((name, i) => ({ ...(crew[i] || {}), name })));
+  }
+  // An avatar's menu: follow it, and (at this computer, for a teammate) rename it.
+  function agentMenu(p, at) {
+    const m = $("agentMenu"); m.textContent = ""; m.hidden = false;
+    const who = document.createElement("div"); who.className = "who"; who.textContent = p.name + (p.job && p.job.lead ? " · lead" : ""); who.style.color = p.ink;
+    const job = document.createElement("div"); job.className = "job"; job.textContent = p.job ? `${p.job.role}: ${p.job.about}` : "an agent on the board";
+    const row = document.createElement("div"); row.className = "row";
+    const fol = document.createElement("button"); fol.type = "button"; fol.textContent = followP === p ? "Stop following" : "Follow";
+    fol.onclick = () => { m.hidden = true; followAgent(followP === p ? null : p); };
+    row.append(fol);
+    if (p.job && atHome) {
+      const ren = document.createElement("button"); ren.type = "button"; ren.textContent = "Rename";
+      ren.onclick = () => {
+        const inp = document.createElement("input"); inp.value = p.name; inp.maxLength = 20; inp.setAttribute("aria-label", "New name");
+        const save = document.createElement("button"); save.type = "button"; save.textContent = "Save";
+        const err = document.createElement("div"); err.className = "err";
+        const go = async () => {
+          const to = inp.value.trim(); if (!to || to === p.name) { m.hidden = true; return; }
+          try {
+            const r = await fetch("/api/agents", { method: "POST", headers: WRITE, body: JSON.stringify({ from: p.name, to }) }), j = await r.json();
+            if (!r.ok) { err.textContent = j.error || `not renamed (${r.status})`; return; }
+            m.hidden = true; poll();
+          } catch (e) { err.textContent = "not renamed: the live server is down"; }
+        };
+        save.onclick = go; inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } if (e.key === "Escape") m.hidden = true; };
+        m.textContent = ""; m.append(who, job, inp, save, err); inp.focus(); inp.select();
+      };
+      row.append(ren);
+    }
+    m.append(who, job, row);
+    const r = at.getBoundingClientRect();
+    Object.assign(m.style, { top: `${Math.round(r.bottom + 8)}px`, left: `${Math.round(Math.max(8, Math.min(innerWidth - 236, r.right - 220)))}px` });
+  }
   const initials = (n) => { const w = n.split(/\s+/).filter(Boolean); return w.length > 1 ? (w[0][0] + w[1][0]).toUpperCase() : n.slice(0, 1).toUpperCase() + n.slice(1, 2).toLowerCase(); };
-  const seenAgents = () => [...ptrs.values()].filter((p) => p.seen);
+  const seenAgents = () => { const all = [...ptrs.values()].filter((p) => p.seen), team = crew.map((a) => ptrs.get(a.name.toLowerCase())).filter(Boolean);
+    return [...team, ...all.filter((p) => !team.includes(p))]; };
   function drawAgents() {
     const list = seenAgents(), key = list.map((p) => p.name).join("\n") + "\n" + (followP ? followP.name : ""), box = $("agents");
     if (key !== agentsKey) {
@@ -1694,13 +1748,14 @@ const live = (() => {
       for (const p of list) {
         const b = document.createElement("button"); b.type = "button"; b.textContent = initials(p.name); b.dataset.name = p.name;
         b.style.background = p.ink; b.style.setProperty("--ink", p.ink);
-        b.title = followP === p ? `Following ${p.name}: click to stop` : `${p.name}: click to follow`;
-        b.onclick = () => followAgent(followP === p ? null : p);
+        b.title = `${p.name}${p.job ? ` · ${p.job.role}${p.job.lead ? ", lead" : ""}` : ""}${followP === p ? " · following" : ""}`;
+        b.onclick = (e) => { e.stopPropagation(); if ($("agentMenu").hidden) agentMenu(p, b); else $("agentMenu").hidden = true; };
         box.appendChild(b);
       }
       // the "to" picker: everyone, or one agent, once there are two
       const sel = $("to"), keep = sel.value; sel.textContent = "";
-      for (const [v, t] of [["", "everyone"], ...list.map((p) => [p.name, p.name])]) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
+      const anyone = crew.length ? `everyone · ${crew[0].name} leads` : "everyone";
+      for (const [v, t] of [["", anyone], ...list.map((p) => [p.name, p.name])]) { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.appendChild(o); }
       sel.value = list.some((p) => p.name === keep) ? keep : "";
       $("toWrap").hidden = list.length < 2;
     }
@@ -1830,6 +1885,7 @@ const live = (() => {
         if (seen.has(it.id)) continue; seen.add(it.id);
         if (it.kind === "comment") render(it);
         else if (it.kind === "op") { try { applyOp(it); } catch (e) { console.error("[live] op failed", e, it); } }
+        else if (it.kind === "team") { try { teamOp(it); } catch (e) { console.error("[live] team failed", e, it); } }
       }
       firstPoll = false;
     } catch (e) { pollFails++; $("dot").className = "dot off"; $("conn").textContent = stale ? STALE : "reconnecting…"; }
@@ -1877,7 +1933,12 @@ const live = (() => {
       window.addEventListener("resize", placeAgents);
       window.__board.agents = () => ({ avatars: [...$("agents").children].map((b) => ({ name: b.dataset.name, text: b.textContent, ink: b.style.background, busy: b.classList.contains("busy"), on: b.classList.contains("on") })),
         following: followP ? followP.name : null, to: $("toWrap").hidden ? null : $("to").value, frame: $("followFrame").classList.contains("show") });
-      select(null); poll();
+      select(null); loadTeam().then(poll, poll);
+      // a click inside the menu never closes it (Rename swaps the menu's contents, so its button is gone by the time the
+      // click would reach the page); a click anywhere else does
+      $("agentMenu").addEventListener("click", (e) => e.stopPropagation());
+      document.addEventListener("click", () => { $("agentMenu").hidden = true; });
+      window.addEventListener("keydown", (e) => { if (e.key === "Escape") $("agentMenu").hidden = true; });
       const join = () => { if (!probe) listen(); queuePush(); };
       if (me) join(); else askName(join);
     },

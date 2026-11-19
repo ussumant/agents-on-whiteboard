@@ -145,7 +145,7 @@ const loadable = e => !!e && typeof e === 'object' && typeof e.id === 'string' &
 // canvas.jsonl holds the BOARD events as records ({id, ts, author, via, key, el, text, change}), which the MCP server
 // pushes from, never by reading the words of a log line back.
 export const files = dir => { const live = path.join(dir, CALL); return { live, thread: path.join(live, 'thread.jsonl'), canvas: path.join(live, 'canvas.jsonl'),
-  events: path.join(live, 'events.log'), scene: path.join(live, 'scene.json'), share: path.join(live, 'share.json'), server: path.join(live, 'server.json'), board: path.join(live, 'board.json') }; };
+  events: path.join(live, 'events.log'), scene: path.join(live, 'scene.json'), agents: path.join(live, 'agents.json'), share: path.join(live, 'share.json'), server: path.join(live, 'server.json'), board: path.join(live, 'board.json') }; };
 const now = () => new Date().toISOString();
 const nextId = p => `${p}${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
 // No writes through symbolic links. A repo can ship its own .agents-on-whiteboard/, and a link in it (events.log pointing at a shell
@@ -210,9 +210,39 @@ export const say = (dir, text, on = null, by, replyTo) => append(dir, withPresen
 export const presenterName = n => { const s = String(n ?? '').replace(/[<>"`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32); return !s || s.toLowerCase() === 'claude' ? 'Claude' : s; };
 export const presenterOf = o => presenterName(o && o.presenter);
 export const samePresenter = (a, b) => presenterName(a).toLowerCase() === presenterName(b).toLowerCase();
-// The agents on a board: everyone who has replied or drawn in its record, and Claude.
+// The team: three Claude subagents on every board, each with a job. The first is the lead: a comment that names no one is
+// for it. The person renames them on the board (this computer only); the names live in agents.json.
+export const DEFAULT_TEAM = [
+  { name: 'Ada', role: 'builder', about: 'draws and changes the board' },
+  { name: 'Linus', role: 'critic', about: 'pokes holes and asks what breaks first' },
+  { name: 'Grace', role: 'scout', about: 'reads the code and docs so the answers are grounded' },
+];
+export const NAME_OK = /^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,19}$/u;
+const NOT_A_NAME = new Set(['you', 'host', 'everyone', 'anyone', 'claude', 'the team']);
+export function team(dir) {
+  let list = null;
+  try {
+    const j = JSON.parse(readSafe(files(dir).agents));
+    if (Array.isArray(j.agents) && j.agents.length === DEFAULT_TEAM.length && j.agents.every(a => a && typeof a.name === 'string' && NAME_OK.test(a.name))) list = j.agents.map(a => a.name);
+  } catch { /* no file yet: the default names */ }
+  return DEFAULT_TEAM.map((a, i) => ({ ...a, name: list ? list[i] : a.name, ...(i === 0 ? { lead: true } : {}) }));
+}
+// Rename a teammate. A record line tells every page and agent; the old name's words stay under the old name.
+export function renameAgent(dir, from, to) {
+  const t = team(dir), i = t.findIndex(a => a.name.toLowerCase() === String(from ?? '').toLowerCase());
+  if (i < 0) throw new Error(`no teammate ${from}`);
+  const name = String(to ?? '').replace(/\s+/g, ' ').trim();
+  if (!NAME_OK.test(name)) throw new Error('a name is 1 to 20 letters, digits, spaces, dots, dashes or underscores, starting with a letter or digit');
+  if (NOT_A_NAME.has(name.toLowerCase()) || presenterName(name) === 'Claude') throw new Error(`"${name}" is taken`);
+  if ([...agentsOn(dir).values(), ...t.map(a => a.name)].some(n => n.toLowerCase() === name.toLowerCase() && n.toLowerCase() !== t[i].name.toLowerCase())) throw new Error(`"${name}" is already on the board`);
+  const names = t.map((a, k) => (k === i ? name : a.name));
+  mkdirSafe(files(dir).live); writeSafe(files(dir).agents, JSON.stringify({ agents: names.map(n => ({ name: n })) }, null, 2) + '\n');
+  return append(dir, { kind: 'team', id: nextId('t'), ts: now(), agents: names, renamed: { from: t[i].name, to: name } });
+}
+// The agents on a board: the team, everyone who has replied or drawn in its record, and Claude.
 export function agentsOn(dir) {
   const m = new Map([['claude', 'Claude']]);
+  for (const a of team(dir)) m.set(a.name.toLowerCase(), a.name);
   for (const i of thread(dir)) if (i && (i.author === 'claude' || i.kind === 'op') && i.op !== 'answer') { const p = presenterOf(i); m.set(p.toLowerCase(), p); }
   return m;
 }
@@ -914,6 +944,15 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         return send(res, 200, { ok: true });
       }
       if (req.method === 'GET' && url.pathname === '/api/thread') { if (!readOk(req, res, fs.existsSync(THREAD) ? fs.statSync(THREAD).size : 0)) return; return send(res, 200, { items: thread(DIR) }); }
+      // The team's names, for the avatars. Renaming one is for the person at this computer, never the share link.
+      if (req.method === 'GET' && url.pathname === '/api/agents') { if (!readOk(req, res, 600)) return; return send(res, 200, { agents: team(DIR) }); }
+      if (req.method === 'POST' && url.pathname === '/api/agents') {
+        if (far) return send(res, 403, { error: 'only the person at this computer renames the team' });
+        const { from, to } = await json(req);
+        let it; try { it = renameAgent(DIR, from, to); } catch (e) { return send(res, 400, { error: e.message }); }
+        appendSafe(EVENTS, `TEAM: ${oneLine(it.renamed.from)} is now ${oneLine(it.renamed.to)}\n`);
+        return send(res, 200, it);
+      }
       if (req.method === 'POST' && url.pathname === '/api/comment') {
         const { text, on: sent, name, to: picked } = await json(req);
         if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'empty' });

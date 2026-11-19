@@ -130,13 +130,15 @@ try {
   ok(bad.every((r) => r.err), `8 a missing box, a used ref, an unknown colour and a missing area box are refused (${bad.map((r) => r.text.slice(0, 50)).join(" | ")})`);
 
   // 10 the agents on the board, top right: one avatar each, in its colour; the "to" picker once there are two
-  const ag = await settle(A, () => { const a = window.__board.agents(); return a.avatars.length === 2; }, null, 5000);
+  const ag = await settle(A, () => { const a = window.__board.agents(); return a.avatars.length === 5; }, null, 5000);
   const a0 = await A.evaluate(() => window.__board.agents());
-  ok(ag >= 0 && a0.avatars.map((x) => x.name).sort().join() === "Claude,Codex" && a0.avatars[0].ink !== a0.avatars[1].ink && a0.to === "",
-    `10 an avatar per agent, each in its colour, and a "to" picker on everyone (${JSON.stringify(a0)})`);
+  ok(ag >= 0 && a0.avatars.map((x) => x.name).join() === "Ada,Linus,Grace,Claude,Codex" && new Set(a0.avatars.map((x) => x.ink)).size === 5 && a0.to === "",
+    `10 an avatar per agent (the team first), each in its colour, and a "to" picker on everyone (${JSON.stringify(a0.avatars.map((x) => x.name))})`);
 
   // 11 click Codex: follow it. Its drawing moves the camera; Claude's doesn't
   await A.click('#agents button[data-name="Codex"]');
+  await A.waitForSelector("#agentMenu:not([hidden]) button");
+  await A.evaluate(() => [...document.querySelectorAll("#agentMenu button")].find((b) => b.textContent === "Follow").click());
   const f1 = await A.evaluate(() => window.__board.agents());
   const chip = await A.evaluate(() => getComputedStyle(document.getElementById("followChip")).display !== "none" && document.querySelector("#followChip span").textContent);
   ok(f1.following === "Codex" && f1.frame && f1.to === "Codex" && chip === "Following Codex", `11a clicking Codex follows it: the frame, "Following Codex", comments to Codex (${JSON.stringify(f1)} ${chip})`);

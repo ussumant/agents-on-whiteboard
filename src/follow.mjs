@@ -7,7 +7,7 @@
 // tour another presenter runs.
 import fs from 'node:fs';
 import path from 'node:path';
-import { files, samePresenter, presenterOf, mentions, shown, mkdirSafe, readSafe, HOME, BREAKS, ID } from './server.mjs';
+import { files, samePresenter, presenterOf, presenterName, mentions, team, shown, mkdirSafe, readSafe, HOME, BREAKS, ID } from './server.mjs';
 
 // Everything in an event came from a commenter, so it is cleaned the way it reaches the agent's context: each field is one
 // line of at most 120 characters with no quotes or angle brackets (they could break out of a <channel …> tag); the text
@@ -22,7 +22,9 @@ const pack = (id, content, meta) => ({ id, content: text(content),
   meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, field(v, k)]).filter(([, v]) => v !== '')) });
 
 // One record line as an event for the session presenting as `me`, or null. `source` is "thread" or "canvas".
-export function eventOf(source, it, board, me) {
+// `crew` is the board's team ({names, lead}); `runsTeam` says this session hands the team's comments to its teammates
+// (board_open {team: true}), so it gets everything for any of them, each event marked `for` the teammate it is for.
+export function eventOf(source, it, board, me, crew = { names: [], lead: null }, runsTeam = false) {
   if (!it || typeof it !== 'object') return null;
   if (source === 'canvas') {
     const who = `${shown(it.author)}${it.via ? ' via link' : ''}`;
@@ -39,16 +41,23 @@ export function eventOf(source, it, board, me) {
       box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
   }
   if (it.kind !== 'comment') return null;
+  const inCrew = n => crew.names.some(c => samePresenter(c, n)), isMe = n => samePresenter(n, me);
   if (it.author === 'claude') {
-    // Another agent on the board handing this one something: its reply names this agent with an @. Never an agent's own
-    // words, and never a reply that names no one, so agents don't wake each other by talking.
-    if (samePresenter(it.presenter, me) || !mentions(it.text, me)) return null;
-    return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: presenterOf(it), via: 'agent', box_id: idOf(on?.id), box_label: on?.label,
-      box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
+    // Another agent on the board handing someone work: its reply names them with an @. Never an agent's own words, and
+    // never a reply that names no one, so agents don't wake each other by talking. A session running the team gets the
+    // hand-offs to any teammate.
+    const named = [presenterName(me), ...(runsTeam ? crew.names : [])].find(n => mentions(it.text, n) && !samePresenter(n, it.presenter));
+    if (!named || samePresenter(it.presenter, me)) return null;
+    return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: presenterOf(it), via: 'agent', ...(runsTeam ? { for: named } : {}),
+      box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
   }
-  if (it.to && !samePresenter(it.to, me)) return null;   // the person picked another agent
-  return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, to: it.to, box_id: idOf(on?.id), box_label: on?.label,
-    box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
+  // The person's comment: for the agent they picked (or @named), else for the team's lead and for every agent outside it.
+  let forWho = null;
+  if (it.to) { if (!(isMe(it.to) || (runsTeam && inCrew(it.to)))) return null; forWho = it.to; }
+  else if (inCrew(me) && !isMe(crew.lead)) return null;   // a teammate's own session: the lead takes the unnamed ones
+  else forWho = crew.lead;
+  return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, to: it.to, ...(runsTeam && forWho ? { for: forWho } : {}),
+    box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
 }
 // The JSON an agent gets from `agents-on-whiteboard wait` and board_wait: the event's id, its fields, and the text.
 export const flatEvent = ev => ({ id: ev.id, ...ev.meta, content: ev.content });
@@ -76,7 +85,7 @@ function startAt(f, since) {
 
 // Follow a board's record: onEvent(event) for each new one. Returns stop(). `me` is the presenter whose answers count
 // (a name, or a function returning the current one).
-export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
+export function follow(dir, onEvent, { me = 'Claude', since, runsTeam = false } = {}) {
   const f = files(dir), board = path.basename(dir);
   mkdirSafe(f.live);
   const pos = startAt(f, since), rest = { thread: '', canvas: '' };
@@ -96,7 +105,8 @@ export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
       try {
         const it = JSON.parse(l);
         if (k === 'thread' && it && it.kind === 'comment' && it.author !== 'claude') handoffs = 0;
-        ev = eventOf(k, it, board, typeof me === 'function' ? me() : me);
+        const t = team(dir), crew = { names: t.map(a => a.name), lead: t[0].name };
+        ev = eventOf(k, it, board, typeof me === 'function' ? me() : me, crew, typeof runsTeam === 'function' ? runsTeam() : runsTeam);
       } catch { /* not a record line */ }
       if (ev && ev.meta.via === 'agent' && ++handoffs > 4) ev = null;
       if (ev) onEvent(ev);
