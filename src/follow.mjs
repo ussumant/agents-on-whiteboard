@@ -7,7 +7,7 @@
 // tour another presenter runs.
 import fs from 'node:fs';
 import path from 'node:path';
-import { files, samePresenter, shown, mkdirSafe, readSafe, HOME, BREAKS, ID } from './server.mjs';
+import { files, samePresenter, presenterOf, mentions, shown, mkdirSafe, readSafe, HOME, BREAKS, ID } from './server.mjs';
 
 // Everything in an event came from a commenter, so it is cleaned the way it reaches the agent's context: each field is one
 // line of at most 120 characters with no quotes or angle brackets (they could break out of a <channel …> tag); the text
@@ -38,8 +38,16 @@ export function eventOf(source, it, board, me) {
       author: it.author || HOME, via: it.via, tour_id: idOf(it.tour_id), step: it.step, pick: it.pick, question: it.question, box_id: idOf(on?.id),
       box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
   }
-  if (it.kind !== 'comment' || it.author === 'claude') return null;
-  return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, box_id: idOf(on?.id), box_label: on?.label,
+  if (it.kind !== 'comment') return null;
+  if (it.author === 'claude') {
+    // Another agent on the board handing this one something: its reply names this agent with an @. Never an agent's own
+    // words, and never a reply that names no one, so agents don't wake each other by talking.
+    if (samePresenter(it.presenter, me) || !mentions(it.text, me)) return null;
+    return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: presenterOf(it), via: 'agent', box_id: idOf(on?.id), box_label: on?.label,
+      box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
+  }
+  if (it.to && !samePresenter(it.to, me)) return null;   // the person picked another agent
+  return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, to: it.to, box_id: idOf(on?.id), box_label: on?.label,
     box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
 }
 // The JSON an agent gets from `agents-on-whiteboard wait` and board_wait: the event's id, its fields, and the text.
@@ -72,6 +80,9 @@ export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
   const f = files(dir), board = path.basename(dir);
   mkdirSafe(f.live);
   const pos = startAt(f, since), rest = { thread: '', canvas: '' };
+  // Agents handing each other work: at most 4 reach this one between two of the person's comments, so two agents
+  // can't keep waking each other (each wake is a paid turn).
+  let handoffs = 0;
   const read = k => {
     const p = f[k]; let size; try { const st = fs.lstatSync(p); if (!st.isFile() || st.nlink > 1) return; size = st.size; } catch { return; }   // never through a link, nor a file with another name
     if (size < pos[k]) { pos[k] = 0; rest[k] = ''; }   // the file was replaced
@@ -80,7 +91,16 @@ export function follow(dir, onEvent, { me = 'Claude', since } = {}) {
     try { fs.readSync(fd, buf, 0, buf.length, pos[k]); } finally { fs.closeSync(fd); }
     pos[k] = size;
     const lines = (rest[k] + buf.toString('utf8')).split('\n'); rest[k] = lines.pop();
-    for (const l of lines) { if (!l.trim()) continue; let ev = null; try { ev = eventOf(k, JSON.parse(l), board, typeof me === 'function' ? me() : me); } catch { /* not a record line */ } if (ev) onEvent(ev); }
+    for (const l of lines) {
+      if (!l.trim()) continue; let ev = null;
+      try {
+        const it = JSON.parse(l);
+        if (k === 'thread' && it && it.kind === 'comment' && it.author !== 'claude') handoffs = 0;
+        ev = eventOf(k, it, board, typeof me === 'function' ? me() : me);
+      } catch { /* not a record line */ }
+      if (ev && ev.meta.via === 'agent' && ++handoffs > 4) ev = null;
+      if (ev) onEvent(ev);
+    }
   };
   const check = () => { read('thread'); read('canvas'); };
   // One watch on the folder catches both files, including one that doesn't exist yet. Where the platform has no folder

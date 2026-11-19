@@ -129,6 +129,64 @@ try {
   ]);
   ok(bad.every((r) => r.err), `8 a missing box, a used ref, an unknown colour and a missing area box are refused (${bad.map((r) => r.text.slice(0, 50)).join(" | ")})`);
 
+  // 10 the agents on the board, top right: one avatar each, in its colour; the "to" picker once there are two
+  const ag = await settle(A, () => { const a = window.__board.agents(); return a.avatars.length === 2; }, null, 5000);
+  const a0 = await A.evaluate(() => window.__board.agents());
+  ok(ag >= 0 && a0.avatars.map((x) => x.name).sort().join() === "Claude,Codex" && a0.avatars[0].ink !== a0.avatars[1].ink && a0.to === "",
+    `10 an avatar per agent, each in its colour, and a "to" picker on everyone (${JSON.stringify(a0)})`);
+
+  // 11 click Codex: follow it. Its drawing moves the camera; Claude's doesn't
+  await A.click('#agents button[data-name="Codex"]');
+  const f1 = await A.evaluate(() => window.__board.agents());
+  const chip = await A.evaluate(() => getComputedStyle(document.getElementById("followChip")).display !== "none" && document.querySelector("#followChip span").textContent);
+  ok(f1.following === "Codex" && f1.frame && f1.to === "Codex" && chip === "Following Codex", `11a clicking Codex follows it: the frame, "Following Codex", comments to Codex (${JSON.stringify(f1)} ${chip})`);
+  await sleep(800);
+  const app0 = await A.evaluate(() => window.__board.screenPointFor("app"));
+  await C.call("board_box", { ref: "far-c", title: "🧾 Receipts", near: "app", side: "above" });
+  await settle(A, () => window.__board.elements().some((e) => e.id === "far-c"), null, 9000);
+  const app1 = await A.evaluate(() => window.__board.screenPointFor("app"));
+  ok(Math.abs(app0.x - app1.x) < 1 && Math.abs(app0.y - app1.y) < 1, `11b Claude's drawing doesn't move the camera of someone following Codex (${JSON.stringify(app0)} → ${JSON.stringify(app1)})`);
+  await X.call("board_box", { ref: "far-x", title: "📦 Packing", sub: "boxes the pizza", near: "app", side: "left" });
+  const moved = await settle(A, (p0) => { const p = window.__board.screenPointFor("app"); return Math.abs(p.x - p0.x) > 5 || Math.abs(p.y - p0.y) > 5; }, app1, 6000);
+  ok(moved >= 0, `11c Codex's drawing does (${moved} ms)`);
+  await settle(A, () => window.__board.elements().some((e) => e.id === "far-x"), null, 9000); await sleep(400); await shot(A, "11-following-codex");
+  await A.keyboard.press("Escape");
+  const f2 = await A.evaluate(() => window.__board.agents());
+  ok(f2.following === null && !f2.frame, `11d Esc stops following (${JSON.stringify(f2)})`);
+
+  // 12 talking to one agent: the picker, or an @Name at the start; no name is everyone
+  const notesOf = (s) => s.notes.filter((n) => n.meta && n.meta.kind === "comment");
+  const [c0, x0] = [notesOf(C).length, notesOf(X).length];
+  await A.select("#to", "Codex"); await A.type("#box", "Codex, how do tips get paid?"); await A.click("#send");
+  for (let i = 0; i < 50 && notesOf(X).length === x0; i++) await sleep(100);
+  const gotX = notesOf(X).length === x0 + 1;
+  await sleep(800);
+  ok(gotX && notesOf(C).length === c0, `12a a comment to Codex reaches Codex only (Codex ${notesOf(X).length - x0}, Claude ${notesOf(C).length - c0})`);
+  const toLine = await A.evaluate(() => [...document.querySelectorAll("#thread .msg .meta")].map((m) => m.textContent).find((t) => t.includes("→")));
+  ok(/You → Codex/.test(toLine || ""), `12b the panel says who it was for (${toLine})`);
+  await A.select("#to", ""); await A.type("#box", "@Claude are retries capped?"); await A.click("#send");
+  for (let i = 0; i < 50 && notesOf(C).length === c0; i++) await sleep(100);
+  await sleep(800);
+  ok(notesOf(C).length === c0 + 1 && notesOf(X).length === x0 + 1, `12c "@Claude …" reaches Claude only (Claude ${notesOf(C).length - c0}, Codex ${notesOf(X).length - x0})`);
+  await A.type("#box", "Both of you: what's missing?"); await A.click("#send");
+  for (let i = 0; i < 50 && notesOf(X).length < x0 + 2; i++) await sleep(100);
+  await sleep(800);
+  ok(notesOf(C).length === c0 + 2 && notesOf(X).length === x0 + 2, `12d a comment naming no one reaches both (Claude ${notesOf(C).length - c0}, Codex ${notesOf(X).length - x0})`);
+
+  // 13 agents hand each other work with @Name; never their own words, and at most 4 between two of the person's comments
+  const [c1, x1] = [notesOf(C).length, notesOf(X).length];
+  await X.call("board_say", { text: "@Claude can you draw where a failed tip goes?" });
+  for (let i = 0; i < 50 && notesOf(C).length === c1; i++) await sleep(100);
+  const hand = notesOf(C).at(-1);
+  ok(notesOf(C).length === c1 + 1 && hand.meta.via === "agent" && hand.meta.author === "Codex" && notesOf(X).length === x1,
+    `13a Codex's "@Claude …" reaches Claude, from Codex, and not Codex itself (${JSON.stringify(hand && hand.meta)})`);
+  await C.call("board_say", { text: "On it." });
+  await sleep(600);
+  ok(notesOf(X).length === x1, "13b a reply that names no one wakes no one");
+  for (let i = 0; i < 6; i++) await X.call("board_say", { text: `@Claude ping ${i}` });
+  await sleep(1500);
+  ok(notesOf(C).length === c1 + 4, `13c at most 4 hand-offs reach an agent between two of the person's comments (${notesOf(C).length - c1})`);
+
   ok(errs.length === 0, `9 no page errors (${errs.slice(0, 3).join(" | ")})`);
 } finally {
   for (const b of browsers) await b.close(); srv.kill(); for (const s of [globalThis.C, globalThis.X]) if (s) s.p.kill();

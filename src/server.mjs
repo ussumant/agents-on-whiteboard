@@ -210,6 +210,27 @@ export const say = (dir, text, on = null, by, replyTo) => append(dir, withPresen
 export const presenterName = n => { const s = String(n ?? '').replace(/[<>"`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32); return !s || s.toLowerCase() === 'claude' ? 'Claude' : s; };
 export const presenterOf = o => presenterName(o && o.presenter);
 export const samePresenter = (a, b) => presenterName(a).toLowerCase() === presenterName(b).toLowerCase();
+// The agents on a board: everyone who has replied or drawn in its record, and Claude.
+export function agentsOn(dir) {
+  const m = new Map([['claude', 'Claude']]);
+  for (const i of thread(dir)) if (i && (i.author === 'claude' || i.kind === 'op') && i.op !== 'answer') { const p = presenterOf(i); m.set(p.toLowerCase(), p); }
+  return m;
+}
+// Does `text` name agent `who` with an @ (not as part of a longer word)?
+export function mentions(text, who) {
+  const n = `@${presenterName(who).toLowerCase()}`, t = String(text ?? '').toLowerCase();
+  for (let i = t.indexOf(n); i >= 0; i = t.indexOf(n, i + 1)) if (!/[\p{L}\p{N}_.]/u.test(t[i - 1] || '') && !/[\p{L}\p{N}_]/u.test(t[i + n.length] || '')) return true;
+  return false;
+}
+// Who a person's comment is for: the agent picked in the page, or the one an @Name at its start names. Only an agent
+// in this board's record; anything else (or "everyone") is every agent.
+export function addressee(dir, picked, text) {
+  const agents = agentsOn(dir);
+  if (typeof picked === 'string' && picked.trim() && picked.trim().toLowerCase() !== 'everyone') return agents.get(presenterName(picked).toLowerCase()) || null;
+  const t = String(text ?? '').trimStart().toLowerCase();
+  const hit = [...agents.values()].filter(a => t.startsWith(`@${a.toLowerCase()}`) && !/[\p{L}\p{N}_]/u.test(t[a.length + 1] || '')).sort((a, b) => b.length - a.length);
+  return hit[0] || null;
+}
 export function withPresenter(o, by) { const p = presenterName(by); return p === 'Claude' ? o : { ...o, presenter: p }; }
 // Text the agent put on the board through ops: a note's or arrow's label (keyed by its container) and each edit's text.
 // When a page saves the scene back, that text must not read as a person's writing.
@@ -894,16 +915,16 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/api/thread') { if (!readOk(req, res, fs.existsSync(THREAD) ? fs.statSync(THREAD).size : 0)) return; return send(res, 200, { items: thread(DIR) }); }
       if (req.method === 'POST' && url.pathname === '/api/comment') {
-        const { text, on: sent, name } = await json(req);
+        const { text, on: sent, name, to: picked } = await json(req);
         if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'empty' });
         if (text.length > 4000) return send(res, 400, { error: 'a comment is at most 4,000 characters' });
         if (recordFull()) return send(res, 413, { error: 'the record is full (10 MB): start a new call' });
         if (linkFull(far)) return send(res, 413, { error: 'the share link has used its half of the record (5 MB)' });
-        const on = cleanOn(sent, known), author = authorOf(name, far);
-        const item = appended(append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(far ? { via: 'link' } : {}) }), far);
+        const on = cleanOn(sent, known), author = authorOf(name, far), to = addressee(DIR, picked, text);
+        const item = appended(append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(to ? { to } : {}), ...(far ? { via: 'link' } : {}) }), far);
         // A comment on a pasted picture names its saved file, so the agent can open the picture it is about.
         const pics = [...new Set([on && on.id, ...((on && on.ids) || [])])].map(id => els.get(id)).filter(e => e && e.type === 'image' && !e.isDeleted).map(e => picOf(e.fileId)).filter(Boolean);
-        appendSafe(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => `${CALL}/files/` + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
+        appendSafe(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${to ? ` to ${oneLine(to)}` : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => `${CALL}/files/` + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);
         return send(res, 200, item);
       }
       if (req.method === 'GET' && url.pathname === '/api/scene') { if (!readOk(req, res, sceneBytes)) return; return send(res, 200, { elements: [...els.values()] }); }
