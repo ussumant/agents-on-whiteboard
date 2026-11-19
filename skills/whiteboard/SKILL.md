@@ -39,7 +39,7 @@ It returns the next comment as JSON: `id`, `kind` (`comment`, `answer` on one of
 board_say {text: "<your answer>", reply_to: "<the comment's id>"}
 ```
 
-`reply_to` puts the reply on the same box or area. Keep it short: two or three sentences, like a person at a whiteboard. To gesture while you answer, `board_point {target: "<box id>", text: "<one short line>"}`. To draw, `board_box` (a new box beside one you name: `near`, `side`, and `from` for its arrow), `board_area` (a labelled frame around some boxes), `board_note`, `board_arrow`, `board_edit`, `board_delete`. Your marker draws each one in front of the person, in your colour, so draw as the talk goes: when an idea settles, put it on the board. `board_focus {target: "all"}` zooms out to the whole board.
+`reply_to` puts the reply on the same box or area, in that comment's thread: the person reads the thread on the board, and their replies in it come back to you with `reply_to` and `thread_id`. Keep it short: two or three sentences, like a person at a whiteboard. To gesture while you answer, `board_point {target: "<box id>", text: "<one short line>"}`. To draw, `board_box` (a new box beside one you name: `near`, `side`, and `from` for its arrow), `board_area` (a labelled frame around some boxes), `board_note`, `board_arrow`, `board_edit`, `board_delete`. Your marker draws each one in front of the person, in your colour, so draw as the talk goes: when an idea settles, put it on the board. `board_focus {target: "all"}` zooms out to the whole board.
 
 Then go back to step 2. Keep the loop going until the person says they're done.
 
