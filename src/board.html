@@ -281,6 +281,15 @@
   .cptr { position: fixed; left: 0; top: 0; z-index: 980; pointer-events: none; display: none; transform: translate(-3px, -2px);
     filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.35)); transition: opacity .6s ease; }
   .cptr.show { display: block; }
+  /* An agent drawing holds a marker in its colour (the nib on its spot) instead of the arrow. Its ink and the words it is
+     writing are drawn in the page, over the board, until the real elements land. */
+  .cptr .pen { display: none; position: absolute; left: -1px; top: -26px; }
+  .cptr.drawing > svg:first-child { display: none; }
+  .cptr.drawing .pen { display: block; }
+  #penInk { position: fixed; inset: 0; z-index: 975; pointer-events: none; overflow: visible; }
+  #penInk path { fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+  #penText { position: fixed; inset: 0; z-index: 976; pointer-events: none; }
+  #penText div { position: absolute; white-space: pre; line-height: 1.25; font-family: Virgil, "Segoe Print", "Comic Sans MS", cursive; }
   .cptr.fading { opacity: 0; }
   .cptr svg { display: block; }
   .cptr .tag { position: absolute; left: 20px; top: 25px; background: #7048e8; color: #fff; font: 600 11px/1 ui-sans-serif, system-ui, sans-serif;
@@ -342,6 +351,7 @@
 
 <div id="laser"></div>
 <svg id="marks"></svg>
+<svg id="penInk"></svg><div id="penText"></div>
 <div id="pins"></div>
 <svg id="spot" aria-hidden="true"><defs>
   <filter id="spotSoft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5"/></filter>
@@ -360,7 +370,7 @@
   <div class="tc-foot"><div id="tcDots"></div><button id="tcBack" title="Back (←)">Back</button><button id="tcNext" title="Next (→)">Next</button></div>
   <i id="tcNotch"></i>
 </div>
-<div id="cptr" class="cptr" aria-hidden="true"><svg width="26" height="31" viewBox="0 0 26 31"><path d="M3 2v22.2l5.9-5.6 4 9 4.2-1.8-4-8.9 8.3-.5z" fill="#7048e8" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg><span class="tag">Claude</span></div>
+<div id="cptr" class="cptr" aria-hidden="true"><svg width="26" height="31" viewBox="0 0 26 31"><path d="M3 2v22.2l5.9-5.6 4 9 4.2-1.8-4-8.9 8.3-.5z" fill="#7048e8" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg><svg class="pen" width="32" height="32" viewBox="0 0 32 32"><path d="M24 3l5 5-15 15-6 1 1-6z" fill="#fff" stroke="#1e1e1e" stroke-width="1.6" stroke-linejoin="round"/><path class="cap" d="M24 3l5 5-3 3-5-5z" fill="#7048e8" stroke="#1e1e1e" stroke-width="1.4" stroke-linejoin="round"/><path class="cap" d="M8.6 18.4l5 5L4 28z" fill="#7048e8" stroke="#1e1e1e" stroke-width="1.2" stroke-linejoin="round"/></svg><span class="tag">Claude</span></div>
 <div id="cchat" class="cchat" title="Click to show it all"><b>Claude</b><span class="typed"></span><span class="rest"></span></div>
 <div id="ink"><div class="about" id="inkAbout"></div><textarea id="inkBox" placeholder="Say it here…"></textarea><div class="hint">Enter sends · Esc cancels</div></div>
 <button id="openPanel">Live discussion</button>
@@ -999,6 +1009,7 @@ const live = (() => {
       $("cchat").after(el, chat);
     }
     el.querySelector("path").setAttribute("fill", ink);
+    el.querySelectorAll(".pen .cap").forEach((c) => c.setAttribute("fill", ink));
     const tag = el.querySelector(".tag"); tag.textContent = name; tag.style.background = ink;
     chat.querySelector("b").textContent = name; chat.style.background = ink;
     p = { name, ink, el, chat, tag, typedEl: chat.querySelector(".typed"), restEl: chat.querySelector(".rest"),
@@ -1263,15 +1274,16 @@ const live = (() => {
     }
     drawTourList();
   }
-  function pointOp(op) {
+  function pointOp(op, queued) {
     const p = ptrOf(op.presenter);   // even in the replay: colours follow the record's order
     if (firstPoll || !api) return;
+    if (p.drawing && !queued) { p.dq = p.dq.then(() => pointOp(op, true)); return; }   // after the drawing in hand, in order
     if (p.beats) p.beats.done = true;
     const run = ++p.run, text = String(op.text || "");
     // A following page pans to the gesture, but not for a guest presenter during someone else's tour: that would pull
     // the viewer off the step. Another presenter's pointer never stops the tour's beats: each pointer has its own run.
     const follow = !(T.cur && !T.following) && (!T.cur || inTour(p));
-    sayAt(p, op.target, text, run, follow).then(() => {
+    return sayAt(p, op.target, text, run, follow).then(() => {
       if (run !== p.run) return;
       const words = Math.max(6000, text.length * 90);   // the words stay while they can be read
       if (inTour(p)) p.fade = setTimeout(() => { if (run === p.run) { p.chat.classList.remove("show"); p.el.classList.remove("talking"); } }, words);
@@ -1294,11 +1306,11 @@ const live = (() => {
     return pts.length ? pts : [{ target: s.target, text: s.text || s.title || "" }]; };
   const drawTyped = (p) => { p.typedEl.textContent = p.text.slice(0, p.typed); p.restEl.textContent = p.text.slice(p.typed); };
   // A following page pans (zoom kept) so a gesture off screen comes into view; a page that stepped away never moves.
-  function reveal([x0, y0, x1, y1]) {
+  function reveal([x0, y0, x1, y1], done) {
     const st = api.getAppState(), a = toView(x0, y0, st), b = toView(x1, y1, st), cv = canvasRect();
-    if (a.x >= cv.left + 40 && a.y >= cv.top + 64 && b.x <= cv.right - 40 && b.y <= cv.bottom - 64) return;
+    if (a.x >= cv.left + 40 && a.y >= cv.top + 64 && b.x <= cv.right - 40 && b.y <= cv.bottom - 64) return done && done();
     const z = st.zoom.value;
-    tween({ z, sx: st.width / (2 * z) - (x0 + x1) / 2, sy: st.height / (2 * z) - (y0 + y1) / 2 });
+    tween({ z, sx: st.width / (2 * z) - (x0 + x1) / 2, sy: st.height / (2 * z) - (y0 + y1) / 2 }, done && (() => done()));
   }
   function showPtr(p) { clearTimeout(p.fade); p.el.classList.remove("fading"); p.el.classList.add("show"); lastPtr = p; }
   function sayAt(p, target, text, run, follow) {
@@ -1454,7 +1466,7 @@ const live = (() => {
   }
   const ptrState = (p) => {
     const r = (el) => { const q = el.getBoundingClientRect(); return { x: q.left, y: q.top, w: q.width, h: q.height }; }, shown = p.el.classList.contains("show");
-    return { name: p.name, ink: p.ink, id: p.el.id, shown, fading: p.el.classList.contains("fading"), at: p.at, text: p.text, typed: p.typed, talking: p.chat.classList.contains("show"),
+    return { name: p.name, ink: p.ink, id: p.el.id, shown, fading: p.el.classList.contains("fading"), drawing: p.el.classList.contains("drawing"), at: p.at, text: p.text, typed: p.typed, talking: p.chat.classList.contains("show"),
       tag: { text: p.tag.textContent, shown: shown && getComputedStyle(p.tag).display !== "none" && p.tag.offsetWidth > 0, rect: r(p.tag) },
       bubble: p.chat.classList.contains("show") ? r(p.chat) : null, beats: p.beats ? { step: p.beats.step, k: p.beats.k, n: p.beats.list.length, done: p.beats.done } : null };
   };
@@ -1495,6 +1507,10 @@ const live = (() => {
       // the tour presenter's pointer during a tour, else the one that moved last (or a named one); every pointer
       pointer: (name) => ptrState(name ? ptrOf(name) : tourPtr() || lastPtr || ptrOf("Claude")),
       pointers: () => [...ptrs.values()].map(ptrState),
+      // the scene as the elements' plain fields, and the camera's zoom (for the gates)
+      elements: () => api.getSceneElements().filter((e) => !e.isDeleted).map(({ id, type, x, y, width, height, text, strokeColor, backgroundColor, strokeStyle, customData, groupIds, containerId }) =>
+        ({ id, type, x, y, width, height, text, strokeColor, backgroundColor, strokeStyle, customData, groupIds, containerId })),
+      zoomNow: () => api.getAppState().zoom.value,
     });
   }
 
@@ -1533,36 +1549,196 @@ const live = (() => {
   const UNDER = (e) => e.customData && e.customData.z === "under";
   const layer = (list) => { if (!list.some(UNDER)) return list; const rest = list.filter((e) => !UNDER(e)), at = rest.reduce((k, e, i) => (e.locked ? i + 1 : k), 0);
     return [...rest.slice(0, at), ...list.filter(UNDER), ...rest.slice(at)]; };
+  // Edge to edge, not centre to centre: a line through a box's face took the clicks meant for the box,
+  // so a row of notes went unclickable. The arrow leaves f where the line between the centres crosses f's border (+8 px).
+  const midOf = (b) => [b.x + b.width / 2, b.y + b.height / 2];
+  const edgeOf = (b, [tx, ty]) => { const [cx, cy] = midOf(b), dx = tx - cx, dy = ty - cy;
+    const k = Math.min(1, 1 / Math.max(Math.abs(dx) / (b.width / 2 + 8), Math.abs(dy) / (b.height / 2 + 8), 1e-9)); return [cx + dx * k, cy + dy * k]; };
+  const arrowEnds = (f, t) => [edgeOf(f, midOf(t)), edgeOf(t, midOf(f))];
+  // An agent's arrow, as an element: its label named after it (fixedLabel), lying under the boxes.
+  function arrowEls(id, f, t, color, label) {
+    const [[sx, sy], [ex, ey]] = arrowEnds(f, t);
+    const a = ExcalidrawLib.convertToExcalidrawElements([{ type: "arrow", id, x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]], strokeColor: color,
+      // (no start/end ids: Excalidraw looks them up only among the new elements, so it never bound them and logged an error)
+      strokeWidth: 2, roughness: 1, roundness: null, endArrowhead: "arrow",
+      ...(label ? { label: { text: label, fontSize: 14, fontFamily: HAND } } : {}) }], { regenerateIds: false });
+    return fixedLabel(a, id).map((e) => ({ ...e, customData: { ...(e.customData || {}), z: "under" } }));
+  }
+
+  /* ---- the agents' markers. A box, an area, a note or an arrow an agent adds is drawn in front of you: its pointer turns
+     into a marker in its colour, glides there, inks the outline and writes the words, then the real elements land in the
+     scene all at once, with ids every page agrees on. The ink is only a show. The elements land on a plain timer whatever
+     happens to it (another gesture, a camera move, a tab in the background), an op from before this page loaded lands
+     at once with no show, and so does one in a hidden tab. Each agent's drawings and gestures play in order. */
+  const DRAW_INKS = { blue: ["#1971c2", "#e7f5ff"], orange: ["#e8590c", "#fff4e6"], green: ["#2f9e44", "#ebfbee"], red: ["#e03131", "#fff5f5"], violet: ["#7048e8", "#f3f0ff"], gray: ["#868e96", "#f8f9fa"] };
+  const fin = (v) => Number.isFinite(+v);
+  // A show stops when its elements land: on the timer, or from another open page that finished first (its words would
+  // otherwise show twice for a moment).
+  const halt = (ctl) => ctl.stop || (ctl.ref && has(ctl.ref));
+  const penSvg = (attrs) => { const e = document.createElementNS("http://www.w3.org/2000/svg", "path"); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v)); return e; };
+  // the ink and the words follow the board when the camera moves
+  function placePen(st) {
+    if (!api) return; st = st || api.getAppState();
+    for (const el of $("penInk").children) if (el.__pts) { el.setAttribute("d", penPath(el.__pts, st)); if (el.__done) el.style.strokeDasharray = el.style.strokeDashoffset = ""; }
+    for (const el of $("penText").children) if (el.__at) penPlace(el, st);
+  }
+  const penPath = (pts, st) => "M" + pts.map(([x, y]) => { const v = toView(x, y, st); return `${v.x.toFixed(1)} ${v.y.toFixed(1)}`; }).join(" L");
+  function penPlace(el, st) { const v = toView(el.__at[0], el.__at[1], st); Object.assign(el.style, { left: `${v.x}px`, top: `${v.y}px`, fontSize: `${el.__size * st.zoom.value}px` }); }
+  // glide the marker's nib to a scene point
+  function penGlide(p, to, ms, ctl) {
+    const z = api.getAppState().zoom.value, from = p.at || [to[0] - 80 / z, to[1] + 70 / z], t0 = performance.now();
+    return new Promise((done) => { const step = (now) => {
+      if (halt(ctl)) return done();
+      const k = Math.min(1, (now - t0) / ms), e = 1 - Math.pow(1 - k, 3);
+      p.at = [from[0] + (to[0] - from[0]) * e, from[1] + (to[1] - from[1]) * e]; placeOne(p);
+      if (k < 1) frame(step); else done();
+    }; frame(step); });
+  }
+  // a stroke through scene points, inked over `ms` with the nib riding its end
+  function penStroke(p, pts, ms, width, ctl) {
+    const path = penSvg({ stroke: p.ink, "stroke-width": width }); path.__pts = pts; $("penInk").appendChild(path); ctl.els.push(path);
+    const seg = [0]; for (let i = 1; i < pts.length; i++) seg.push(seg[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const L = seg[seg.length - 1] || 1, t0 = performance.now();
+    return new Promise((done) => { const step = (now) => {
+      const k = halt(ctl) ? 1 : Math.min(1, (now - t0) / ms), e = k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      path.setAttribute("d", penPath(pts, api.getAppState()));
+      const len = path.getTotalLength() || 1; path.style.strokeDasharray = `${len}`; path.style.strokeDashoffset = `${len * (1 - e)}`;
+      const at = e * L; let i = 1; while (i < seg.length - 1 && seg[i] < at) i++;
+      const f = (at - seg[i - 1]) / ((seg[i] - seg[i - 1]) || 1);
+      p.at = [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f]; placeOne(p);
+      if (k < 1) frame(step); else { path.__done = true; path.style.strokeDasharray = path.style.strokeDashoffset = ""; done(); }
+    }; frame(step); });
+  }
+  // the words, written a letter at a time in the board's hand, the nib at the end of the line
+  function penWrite(p, at, text, size, color, ms, ctl) {
+    const div = document.createElement("div"); div.__at = at; div.__size = size; div.style.color = color; $("penText").appendChild(div); ctl.els.push(div);
+    penPlace(div, api.getAppState());
+    const chars = [...String(text)]; let n = 0;
+    return new Promise((done) => { const tick = () => {
+      n = halt(ctl) ? chars.length : n + 1; div.textContent = chars.slice(0, n).join("");
+      const z = api.getAppState().zoom.value; p.at = [at[0] + div.offsetWidth / z, at[1] + size * 1.05]; placeOne(p);
+      if (n < chars.length) setTimeout(tick, ms); else done();
+    }; setTimeout(tick, ms); });
+  }
+  // a rounded rectangle's outline as points, from just past the top-left corner round and a little past the start
+  function roundPts(x, y, w, h) {
+    const r = Math.min(20, w / 4, h / 4), pts = [[x + r, y], [x + w - r, y]];
+    const arc = (cx, cy, a0) => { for (let k = 1; k <= 6; k++) { const a = a0 + (Math.PI / 2) * (k / 6); pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]); } };
+    arc(x + w - r, y + r, -Math.PI / 2); pts.push([x + w, y + h - r]); arc(x + w - r, y + h - r, 0); pts.push([x + r, y + h]);
+    arc(x + r, y + h - r, Math.PI / 2); pts.push([x, y + r]); arc(x + r, y + r, Math.PI); pts.push([x + r + 8, y - 1]);
+    return pts;
+  }
+  // Queue a drawing on its agent's marker. commit() puts the real elements in the scene; it checks they aren't there yet.
+  function penDraw(op, commit, show) {
+    if (!api || firstPoll || !(Date.parse(op.ts) > LOADED_AT - 4000) || document.hidden) return commit();
+    const p = ptrOf(op.presenter), ctl = { stop: false, els: [], ref: op.ref };
+    p.drawing = (p.drawing || 0) + 1;
+    const land = () => { ctl.stop = true; commit(); };
+    const cap = setTimeout(land, 6000 + 4000 * (p.drawing - 1));   // the show never holds the elements back for long
+    p.dq = (p.dq || Promise.resolve()).then(async () => {
+      if (!ctl.stop) {
+        clearTimeout(p.fade); p.run++; stopBeats(p); showPtr(p); p.box = null;
+        p.chat.classList.remove("show"); p.el.classList.remove("talking"); p.el.classList.add("drawing");
+        try { await Promise.race([show(p, ctl), new Promise((r) => setTimeout(r, 7000))]); } catch (e) { console.error("[live] drawing failed", e); }
+      }
+      clearTimeout(cap); land();
+      // the ink goes a frame after the real lines are there, so the two never both miss
+      frame(() => ctl.els.forEach((el) => el.remove()));
+      if (--p.drawing === 0) { p.el.classList.remove("drawing"); parkThenFade(p, 0); if (camOwner === p) camOwner = null; }
+    });
+  }
+  // Every page that follows the agent pans to its drawing first, as for its gestures (never a page that stepped off a tour).
+  // With two agents drawing at once the camera stays with the one that started first, until it puts its marker down;
+  // the other's marker draws where it is (or waits at the board's edge).
+  let camOwner = null;
+  const penReveal = (p, r) => new Promise((done) => {
+    if ((T.cur && !T.following) || (T.cur && !inTour(p))) return done();
+    if (camOwner && camOwner !== p && camOwner.drawing) return done();
+    camOwner = p; reveal(r, done);
+  });
+  const boxShow = (op) => async (p, ctl) => {
+    await penReveal(p, [op.x - 20, op.y - 20, op.x + op.w + 20, op.y + op.h + 20]);
+    await penGlide(p, [op.x + 20, op.y], 450, ctl);
+    await penStroke(p, roundPts(op.x, op.y, op.w, op.h), 800, 3, ctl);
+    await penWrite(p, [op.x + 18, op.y + 22], op.title, 20, "#1e1e1e", 45, ctl);
+    if (op.sub) await penWrite(p, [op.x + 18, op.y + 60], op.sub, 15, "#868e96", 22, ctl);
+    const f = op.from && live$().find((e) => e.id === op.from);
+    if (f) { const [s, t] = arrowEnds(f, { x: op.x, y: op.y, width: op.w, height: op.h }); await penStroke(p, [s, t], 450, 2.5, ctl); }
+  };
+  const areaShow = (op) => async (p, ctl) => {
+    await penReveal(p, [op.x, op.y, op.x + op.w, op.y + op.h]);
+    await penGlide(p, [op.x + 20, op.y], 450, ctl);
+    await penStroke(p, roundPts(op.x, op.y, op.w, op.h), 1000, 3, ctl);
+    await penWrite(p, [op.x + 14, op.y + 8], op.label, 16, (DRAW_INKS[op.color] || DRAW_INKS.gray)[0], 45, ctl);
+  };
+  const noteShow = (op) => async (p, ctl) => {
+    const w = op.w || 260, h = op.h || 90;
+    await penReveal(p, [op.x, op.y, op.x + w, op.y + h]);
+    await penGlide(p, [op.x + 20, op.y], 450, ctl);
+    await penStroke(p, roundPts(op.x, op.y, w, h), 700, 2.5, ctl);
+  };
+  const arrowShow = (op) => async (p, ctl) => {
+    const f = live$().find((e) => e.id === op.from), t = live$().find((e) => e.id === op.to); if (!f || !t) return;
+    const [s, e] = arrowEnds(f, t);
+    await penReveal(p, [Math.min(s[0], e[0]), Math.min(s[1], e[1]), Math.max(s[0], e[0]), Math.max(s[1], e[1])]);
+    await penGlide(p, s, 450, ctl);
+    await penStroke(p, [s, e], 500, 2.5, ctl);
+  };
+  const has = (id) => api.getSceneElementsIncludingDeleted().some((e) => e.id === id);
+  function boxEls(op) {
+    const [stroke, bg] = DRAW_INKS[op.color] || ["#1e1e1e", "#ffffff"], g = [`${op.ref}__grp`];
+    const made = ExcalidrawLib.convertToExcalidrawElements([
+      { type: "rectangle", id: op.ref, x: op.x, y: op.y, width: op.w, height: op.h, roundness: { type: 3 }, strokeColor: stroke, backgroundColor: bg, fillStyle: "solid", strokeWidth: 2, roughness: 1 },
+      { type: "text", id: `${op.ref}__title`, x: op.x + 18, y: op.y + 22, text: String(op.title), fontSize: 20, fontFamily: HAND, strokeColor: "#1e1e1e" },
+      ...(op.sub ? [{ type: "text", id: `${op.ref}__sub`, x: op.x + 18, y: op.y + 60, text: String(op.sub), fontSize: 15, fontFamily: HAND, strokeColor: "#868e96" }] : []),
+    ], { regenerateIds: false }).map((e) => ({ ...e, groupIds: g }));
+    const f = op.from && api.getSceneElements().find((e) => e.id === op.from && !e.isDeleted);
+    return f ? [...made, ...arrowEls(`${op.ref}__from`, f, { x: op.x, y: op.y, width: op.w, height: op.h }, "#495057", op.label)] : made;
+  }
+  function areaEls(op) {
+    const ink = (DRAW_INKS[op.color] || DRAW_INKS.gray)[0];
+    return ExcalidrawLib.convertToExcalidrawElements([
+      { type: "rectangle", id: op.ref, x: op.x, y: op.y, width: op.w, height: op.h, roundness: { type: 3 }, strokeColor: ink, backgroundColor: "transparent", strokeStyle: "dashed", strokeWidth: 2, roughness: 1 },
+      { type: "text", id: `${op.ref}__label`, x: op.x + 14, y: op.y + 8, text: String(op.label), fontSize: 16, fontFamily: HAND, strokeColor: ink },
+    ], { regenerateIds: false }).map((e) => e.id === op.ref ? { ...e, customData: { ...(e.customData || {}), z: "under" } } : e);
+  }
+
   function applyOp(op) {
     // Ops rewrite the whole scene, so they carry the deleted elements too: a delete must stay a delete on every page,
     // and a note someone deleted must not come back when a new page replays the thread.
     const all = api.getSceneElementsIncludingDeleted(), els = all.filter((e) => !e.isDeleted);
-    if (op.op === "note" && op.ref && !all.some((e) => e.id === op.ref)) {
-      const n = ExcalidrawLib.convertToExcalidrawElements([{ type: "rectangle", id: op.ref, x: op.x, y: op.y, width: op.w || 260, height: op.h || 90, roundness: { type: 3 },
-        strokeColor: op.color === "orange" ? "#e8590c" : BLUE, backgroundColor: op.color === "orange" ? "#fff4e6" : "#e7f5ff", fillStyle: "solid", strokeWidth: 1.5, roughness: 1,
-        label: { text: op.text, fontSize: 15, fontFamily: HAND, strokeColor: op.color === "orange" ? "#d9480f" : BLUE_INK, textAlign: "left", verticalAlign: "middle" } }], { regenerateIds: false });
-      api.updateScene({ elements: [...all, ...fixedLabel(n, op.ref)] });
+    if (op.op === "note" && op.ref && !all.some((e) => e.id === op.ref) && fin(op.x) && fin(op.y)) {
+      penDraw(op, () => {
+        if (has(op.ref)) return;
+        const n = ExcalidrawLib.convertToExcalidrawElements([{ type: "rectangle", id: op.ref, x: op.x, y: op.y, width: op.w || 260, height: op.h || 90, roundness: { type: 3 },
+          strokeColor: op.color === "orange" ? "#e8590c" : BLUE, backgroundColor: op.color === "orange" ? "#fff4e6" : "#e7f5ff", fillStyle: "solid", strokeWidth: 1.5, roughness: 1,
+          label: { text: op.text, fontSize: 15, fontFamily: HAND, strokeColor: op.color === "orange" ? "#d9480f" : BLUE_INK, textAlign: "left", verticalAlign: "middle" } }], { regenerateIds: false });
+        api.updateScene({ elements: [...api.getSceneElementsIncludingDeleted(), ...fixedLabel(n, op.ref)] });
+      }, noteShow(op));
     } else if (op.op === "arrow" && op.ref && !all.some((e) => e.id === op.ref)) {
-      const f = els.find((e) => e.id === op.from), t = els.find((e) => e.id === op.to); if (!f || !t) return;
-      // Edge to edge, not centre to centre: a line through a box's face took the clicks meant for the box,
-      // so a row of notes went unclickable. The arrow leaves f where the line between the centres crosses f's border (+8 px).
-      const mid = (b) => [b.x + b.width / 2, b.y + b.height / 2];
-      const edge = (b, [tx, ty]) => { const [cx, cy] = mid(b), dx = tx - cx, dy = ty - cy;
-        const k = Math.min(1, 1 / Math.max(Math.abs(dx) / (b.width / 2 + 8), Math.abs(dy) / (b.height / 2 + 8), 1e-9)); return [cx + dx * k, cy + dy * k]; };
-      const [sx, sy] = edge(f, mid(t)), [ex, ey] = edge(t, mid(f));
-      const a = ExcalidrawLib.convertToExcalidrawElements([{ type: "arrow", id: op.ref, x: sx, y: sy, points: [[0, 0], [ex - sx, ey - sy]], strokeColor: op.color === "orange" ? "#e8590c" : BLUE,
-        // (no start/end ids: Excalidraw looks them up only among the new elements, so it never bound them and logged an error)
-        strokeWidth: 2, roughness: 1, roundness: null, endArrowhead: "arrow",
-        ...(op.label ? { label: { text: op.label, fontSize: 14, fontFamily: HAND } } : {}) }], { regenerateIds: false });
-      api.updateScene({ elements: layer([...all, ...fixedLabel(a, op.ref).map((e) => ({ ...e, customData: { ...(e.customData || {}), z: "under" } }))]) });
+      if (!els.some((e) => e.id === op.from) || !els.some((e) => e.id === op.to)) return;
+      penDraw(op, () => {
+        const now = api.getSceneElements(), f = now.find((e) => e.id === op.from && !e.isDeleted), t = now.find((e) => e.id === op.to && !e.isDeleted);
+        if (has(op.ref) || !f || !t) return;
+        api.updateScene({ elements: layer([...api.getSceneElementsIncludingDeleted(), ...arrowEls(op.ref, f, t, op.color === "orange" ? "#e8590c" : BLUE, op.label)]) });
+      }, arrowShow(op));
+    } else if (op.op === "box" && op.ref && !all.some((e) => e.id === op.ref) && [op.x, op.y, op.w, op.h].every(fin) && op.title) {
+      penDraw(op, () => { if (!has(op.ref)) api.updateScene({ elements: layer([...api.getSceneElementsIncludingDeleted(), ...boxEls(op)]) }); }, boxShow(op));
+    } else if (op.op === "area" && op.ref && !all.some((e) => e.id === op.ref) && [op.x, op.y, op.w, op.h].every(fin) && op.label) {
+      penDraw(op, () => { if (!has(op.ref)) api.updateScene({ elements: layer([...api.getSceneElementsIncludingDeleted(), ...areaEls(op)]) }); }, areaShow(op));
     } else if (op.op === "edit") {
       const target = els.find((e) => e.id === `${op.target}__title`) || els.find((e) => e.type === "text" && e.containerId === op.target) || els.find((e) => e.id === op.target && e.type === "text");
       // Every new page replays the whole thread: an edit someone made after this op must win, not be put back.
       if (target && target.text !== op.text && !(target.updated > Date.parse(op.ts))) api.updateScene({ elements: all.map((e) => (e.id === target.id ? ExcalidrawLib.newElementWith(e, { text: op.text, originalText: op.text }) : e)) });
     } else if (op.op === "delete") {
-      api.updateScene({ elements: all.map((e) => !e.isDeleted && !(e.updated > Date.parse(op.ts)) && (e.id === op.target || e.containerId === op.target || (e.groupIds || []).includes(`${op.target}__grp`)) ? ExcalidrawLib.newElementWith(e, { isDeleted: true }) : e) });
+      // a box goes with its title, its small line and the arrow it was drawn with
+      const from = `${op.target}__from`;
+      api.updateScene({ elements: all.map((e) => !e.isDeleted && !(e.updated > Date.parse(op.ts)) && (e.id === op.target || e.containerId === op.target || (e.groupIds || []).includes(`${op.target}__grp`) || e.id === from || e.containerId === from) ? ExcalidrawLib.newElementWith(e, { isDeleted: true }) : e) });
     }
-    if (op.op === "focus" && Date.parse(op.ts) > LOADED_AT - 4000) view([].concat(op.target), true);
+    if (op.op === "focus" && Date.parse(op.ts) > LOADED_AT - 4000) {
+      if (op.target === "all") view(live$().map((e) => e.id), false);   // the whole board, no outline
+      else view([].concat(op.target), true);
+    }
     if (op.op === "tour") tourOp(op);
     else if (op.op === "tour_step") tourStepOp(op);
     else if (op.op === "point") pointOp(op);
@@ -1630,7 +1806,7 @@ const live = (() => {
       const next = ids.length ? ids[0] : null, boxes = boxIds(ids);
       const key = boxes.length > 1 ? boxes.join(",") : (labelOf(next) || {}).id;
       if ((sel && !sel.tour ? (sel.ids ? sel.ids.join(",") : sel.id) : undefined) !== key) select(next, boxes);
-      placePins(appState); if (ink.rect) placeInk(appState);
+      placePins(appState); if (ink.rect) placeInk(appState); placePen(appState);
       placeTour(appState); placePointer(appState);
       queuePush();
     },

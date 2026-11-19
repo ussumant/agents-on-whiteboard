@@ -210,7 +210,7 @@ export const say = (dir, text, on = null, by, replyTo) => append(dir, withPresen
 export const presenterName = n => { const s = String(n ?? '').replace(/[<>"`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32); return !s || s.toLowerCase() === 'claude' ? 'Claude' : s; };
 export const presenterOf = o => presenterName(o && o.presenter);
 export const samePresenter = (a, b) => presenterName(a).toLowerCase() === presenterName(b).toLowerCase();
-function withPresenter(o, by) { const p = presenterName(by); return p === 'Claude' ? o : { ...o, presenter: p }; }
+export function withPresenter(o, by) { const p = presenterName(by); return p === 'Claude' ? o : { ...o, presenter: p }; }
 // Text the agent put on the board through ops: a note's or arrow's label (keyed by its container) and each edit's text.
 // When a page saves the scene back, that text must not read as a person's writing.
 export const flat = t => String(t ?? '').replace(BREAKS, ' ').replace(/\s+/g, ' ').slice(0, 200);
@@ -221,6 +221,13 @@ export function claudeWrote(dir) {
     if (i.op === 'note' && i.ref) said[`label:${i.ref}`] = flat(i.text).trim();
     if (i.op === 'arrow' && i.ref && i.label) said[`label:${i.ref}`] = flat(i.label).trim();
     if (i.op === 'edit') said[`label:${i.target}`] = said[`${i.target}__title`] = said[i.target] = flat(i.text).trim();
+    // a box's title and small line, the label on its arrow, an area's label: the agent's own words, not someone writing
+    if (i.op === 'box' && i.ref) {
+      said[`${i.ref}__title`] = flat(i.title).trim();
+      if (i.sub) said[`${i.ref}__sub`] = flat(i.sub).trim();
+      if (i.label) said[`label:${i.ref}__from`] = flat(i.label).trim();
+    }
+    if (i.op === 'area' && i.ref) said[`${i.ref}__label`] = flat(i.label).trim();
   }
   return (id, t) => said[id] !== undefined && said[id] === flat(t).trim();
 }
@@ -229,8 +236,105 @@ export function claudeWrote(dir) {
 export const op = (dir, o) => {
   if (o.ref != null && !(typeof o.ref === 'string' && ID.test(o.ref) && o.ref.length <= 120)) throw new Error(`ref must be letters, digits, _ - . or : (at most 120), like "note-1" (got ${JSON.stringify(o.ref)})`);
   if (o.text != null && String(o.text).length > 10000) throw new Error('text is at most 10,000 characters');
+  if (o.op === 'box') o = boxOp(dir, o);
+  else if (o.op === 'area') o = areaOp(dir, o);
   return append(dir, { ...o, kind: 'op', id: nextId('op'), ts: now() });
 };
+
+// The agent's drawing: a box in the board's own style, or a labelled area around boxes. Where it goes is worked out here,
+// once, from the board as everyone has it (scene.json, plus drawing still on its way to the pages), so every open page
+// draws it in the same spot, and an agent that can't see coordinates still puts it next to the box it means. The MCP
+// tools and the CLI's `op` both come through op() above, so both get the same checks.
+export const BOX = { w: 230, h: 104, gapX: 100, gapY: 126 };
+export const DRAW_COLORS = ['blue', 'orange', 'green', 'red', 'violet', 'gray'];
+export const SIDES = ['right', 'below', 'left', 'above'];
+function boardNow(dir) {
+  let els = [];
+  try { els = JSON.parse(readSafe(files(dir).scene)).elements || []; } catch { try { const f = seedFile(dir); if (f) els = readBoard(f).elements; } catch { /* no board yet */ } }
+  els = els.filter(e => e && typeof e === 'object' && typeof e.id === 'string');
+  const known = new Set(els.map(e => e.id)), live = new Map(els.filter(e => !e.isDeleted).map(e => [e.id, e]));
+  // Drawing no page has saved yet (a box drawn a second ago is still being inked in): its spot is taken too. Anything the
+  // scene already knows, deleted or not, is the scene's to say.
+  const gone = new Set(), pending = new Map();
+  for (const i of thread(dir)) if (i.kind === 'op') {
+    if (i.op === 'delete') gone.add(String(i.target));
+    else if (['box', 'area', 'note'].includes(i.op) && typeof i.ref === 'string' && [i.x, i.y].every(Number.isFinite)) pending.set(i.ref, { id: i.ref, type: 'rectangle', x: i.x, y: i.y,
+      width: +i.w || (i.op === 'note' ? 260 : BOX.w), height: +i.h || (i.op === 'note' ? 90 : BOX.h), groupIds: i.op === 'box' ? [`${i.ref}__grp`] : [], ...(i.op === 'area' ? { customData: { z: 'under' } } : {}) });
+  }
+  for (const [id, e] of pending) if (!known.has(id) && !gone.has(id)) live.set(id, e);
+  return live;
+}
+const boundsOf = e => {
+  const pts = Array.isArray(e.points) && e.points.length ? e.points.map(p => [e.x + p[0], e.y + p[1]]) : [[e.x, e.y], [e.x + (+e.width || 0), e.y + (+e.height || 0)]];
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+};
+// A box on the board is its whole group (the rectangle, its title, its small line), found from any of its parts' ids.
+function thingBounds(live, id) {
+  const e = live.get(String(id)); if (!e) return null;
+  const g = (e.groupIds || [])[0], parts = g ? [...live.values()].filter(x => (x.groupIds || []).includes(g)) : [e];
+  const bs = parts.map(boundsOf).filter(b => b.every(Number.isFinite)); if (!bs.length) return null;
+  return [Math.min(...bs.map(b => b[0])), Math.min(...bs.map(b => b[1])), Math.max(...bs.map(b => b[2])), Math.max(...bs.map(b => b[3]))];
+}
+// The first free spot on that side of the anchor, stepping further out while something is there. Lines, labels inside
+// shapes, locked backgrounds, the agent's own areas and anything drawn around the anchor never count as in the way.
+function place(live, a, w, h) {
+  const blocks = [...live.values()].filter(e => !e.containerId && !LINEAR.has(e.type) && e.type !== 'frame' && !e.locked && !(e.customData && e.customData.z === 'under'))
+    .map(boundsOf).filter(b => b.every(Number.isFinite));
+  const hits = (occ, x, y) => occ.some(r => r[0] < x + w + 20 && r[2] > x - 20 && r[1] < y + h + 20 && r[3] > y - 20);
+  if (a.near != null) {
+    const b = thingBounds(live, a.near); if (!b) throw new Error(`no box ${a.near} on the board`);
+    const occ = blocks.filter(r => !(r[0] <= b[0] && r[1] <= b[1] && r[2] >= b[2] && r[3] >= b[3]));
+    let x, y, dx = 0, dy = 0;
+    const side = a.side || 'right';
+    if (side === 'right') { x = b[2] + BOX.gapX; y = b[1]; dx = w + BOX.gapX; }
+    else if (side === 'left') { x = b[0] - BOX.gapX - w; y = b[1]; dx = -(w + BOX.gapX); }
+    else if (side === 'below') { x = b[0]; y = b[3] + BOX.gapY; dy = h + BOX.gapY; }
+    else { x = b[0]; y = b[1] - BOX.gapY - h; dy = -(h + BOX.gapY); }
+    for (let k = 0; k < 40 && hits(occ, x, y); k++) { x += dx; y += dy; }
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+  if (a.x != null) return { x: Math.round(a.x), y: Math.round(a.y) };
+  // no anchor: a new row under everything, at the board's left edge
+  return blocks.length ? { x: Math.round(Math.min(...blocks.map(r => r[0]))), y: Math.round(Math.max(...blocks.map(r => r[3])) + BOX.gapY) } : { x: 0, y: 0 };
+}
+const oneText = (v, max, what) => {
+  if (v != null && typeof v !== 'string') throw new Error(`${what} is text`);
+  const s = String(v ?? '').replace(BREAKS, ' ').replace(/\s+/g, ' ').trim();
+  if (s.length > max) throw new Error(`${what} is at most ${max} characters`);
+  return s;
+};
+function newRef(dir, live, ref, what) {
+  if (typeof ref !== 'string') throw new Error(`${what} needs \`ref\`, its new id, like "retry"`);
+  if (ref.length > 100) throw new Error('ref is at most 100 characters');
+  if (live.has(ref) || thread(dir).some(i => i.kind === 'op' && i.ref === ref)) throw new Error(`${ref} is already on the board (or was): pick a new ref`);
+}
+const colorOf = c => { if (c != null && !DRAW_COLORS.includes(c)) throw new Error(`color is one of ${DRAW_COLORS.join(', ')}`); return c ? { color: c } : {}; };
+const by = o => (o.presenter != null ? { presenter: presenterName(o.presenter) } : {});
+function boxOp(dir, o) {
+  const live = boardNow(dir); newRef(dir, live, o.ref, 'a box');
+  const title = oneText(o.title, 80, 'title'), sub = oneText(o.sub, 120, 'sub'), label = oneText(o.label, 40, 'label');
+  if (!title) throw new Error('a box needs a `title`');
+  if (o.side != null && !SIDES.includes(o.side)) throw new Error(`side is one of ${SIDES.join(', ')}`);
+  if (o.near != null && typeof o.near !== 'string') throw new Error('near is the id of a box on the board');
+  if (o.from != null && (typeof o.from !== 'string' || !live.has(o.from))) throw new Error(`no box ${o.from} on the board to draw the arrow from`);
+  if ((o.x != null || o.y != null) && !([o.x, o.y].every(v => Number.isFinite(v) && Math.abs(v) < 1e6))) throw new Error('x and y are numbers, together');
+  // wide enough for its words (Virgil at 20 px is about 11 px a letter, the small line at 15 px about 8), never over 460
+  const w = Math.round(Math.min(460, Math.max(BOX.w, 36 + Math.max([...title].length * 11, [...sub].length * 8)))), h = sub ? BOX.h : 70;
+  return { op: 'box', ref: o.ref, title, ...(sub ? { sub } : {}), ...place(live, o, w, h), w, h, ...(o.near != null ? { near: o.near, side: o.side || 'right' } : {}),
+    ...(o.from != null ? { from: o.from, ...(label ? { label } : {}) } : {}), ...colorOf(o.color), ...by(o) };
+}
+function areaOp(dir, o) {
+  const live = boardNow(dir); newRef(dir, live, o.ref, 'an area');
+  const label = oneText(o.label, 40, 'label'); if (!label) throw new Error('an area needs a `label`, like "v2"');
+  const ids = [].concat(o.target ?? []).map(String);
+  if (!ids.length || ids.length > 50) throw new Error('target is the ids of the boxes to draw the area around (1 to 50)');
+  const bs = ids.map(id => thingBounds(live, id)), miss = ids.filter((id, k) => !bs[k]);
+  if (miss.length) throw new Error(`no box ${miss.join(', ')} on the board`);
+  // 30 px clear of the boxes, and 28 more at the top for the label
+  const x0 = Math.min(...bs.map(b => b[0])) - 30, y0 = Math.min(...bs.map(b => b[1])) - 58, x1 = Math.max(...bs.map(b => b[2])) + 30, y1 = Math.max(...bs.map(b => b[3])) + 30;
+  return { op: 'area', ref: o.ref, label, target: ids, x: Math.round(x0), y: Math.round(y0), w: Math.round(x1 - x0), h: Math.round(y1 - y0), ...colorOf(o.color), ...by(o) };
+}
 // Who wrote it: a name a person typed into the page. "claude" is reserved for the CLI and the MCP tools, so a page can
 // never post as the agent.
 // A name is folded to its plain letters first (full-width letters, accents, zero-width marks and Cyrillic or Greek
