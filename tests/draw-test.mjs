@@ -190,6 +190,8 @@ try {
   ok(notesOf(C).length === c1 + 4, `13c at most 4 hand-offs reach an agent between two of the person's comments (${notesOf(C).length - c1})`);
 
   ok(errs.length === 0, `9 no page errors (${errs.slice(0, 3).join(" | ")})`);
+} catch (e) {
+  ok(false, `the gate crashed: ${e && e.stack ? e.stack.split("\n").slice(0, 3).join(" | ") : e}`);   // a throw must never read as a pass
 } finally {
   for (const b of browsers) await b.close(); srv.kill(); for (const s of [globalThis.C, globalThis.X]) if (s) s.p.kill();
   process.exit(process.exitCode || 0);   // the MCP sessions' pipes would keep node running

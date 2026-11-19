@@ -112,6 +112,8 @@ try {
   ok(viaLink.status === 403 && taken.status === 400 && junk.status === 400, `7 the link can't rename (${viaLink.status}); a taken name (${taken.status}) and a non-name (${junk.status}) are refused`);
 
   ok(errs.length === 0, `8 no page errors (${errs.slice(0, 3).join(" | ")})`);
+} catch (e) {
+  ok(false, `the gate crashed: ${e && e.stack ? e.stack.split("\n").slice(0, 3).join(" | ") : e}`);   // a throw must never read as a pass
 } finally {
   for (const b of browsers) await b.close(); srv.kill(); for (const s of sessions) s.p.kill();
   process.exit(process.exitCode || 0);
