@@ -98,7 +98,7 @@ try {
   const m2 = await A.evaluate(() => window.__board.mentions());
   await A.keyboard.press("Enter");
   const v4 = await A.evaluate(() => document.getElementById("thReply").value);
-  ok(m1.open && m1.names.join() === "Claude,Codex" && m2.names.join() === "Codex", `4a @ lists the agents on the board (${m1.names}), "@Co" narrows to Codex (${m2.names})`);
+  ok(m1.open && m1.names.join() === "Ada,Linus,Grace,Claude,Codex" && m2.names.join() === "Codex", `4a @ lists the agents on the board (${m1.names}), "@Co" narrows to Codex (${m2.names})`);
   ok(v4 === "@Codex " && !(await A.evaluate(() => window.__board.mentions().open)) && (await card(A)).open, `4b Enter puts "@Codex " in the box and leaves the card open (${JSON.stringify(v4)})`);
 
   // 5 the reply from the card is saved with reply_to and the first comment's place, and goes to Codex only
