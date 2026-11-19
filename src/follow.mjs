@@ -21,6 +21,11 @@ const areaOf = on => on?.rect && ['x', 'y', 'w', 'h'].every(k => Number.isFinite
 const pack = (id, content, meta) => ({ id, content: text(content),
   meta: Object.fromEntries(Object.entries(meta).filter(([, v]) => v != null && v !== '').map(([k, v]) => [k, field(v, k)]).filter(([, v]) => v !== '')) });
 
+// A reply in a comment thread says which comment it answers (reply_to) and which thread it is in (thread_id, the id of the
+// thread's first comment), so the agent answers in that thread with board_say reply_to=<this comment's id>. An agent's
+// reply records no thread_id; the comment it answers stands in for it.
+const inThread = it => it.reply_to ? { reply_to: idOf(it.reply_to), thread_id: idOf(it.thread_id ?? it.reply_to) } : {};
+
 // One record line as an event for the session presenting as `me`, or null. `source` is "thread" or "canvas".
 // `crew` is the board's team ({names, lead}); `runsTeam` says this session hands the team's comments to its teammates
 // (board_open {team: true}), so it gets everything for any of them, each event marked `for` the teammate it is for.
@@ -49,7 +54,7 @@ export function eventOf(source, it, board, me, crew = { names: [], lead: null },
     const named = [presenterName(me), ...(runsTeam ? crew.names : [])].find(n => mentions(it.text, n) && !samePresenter(n, it.presenter));
     if (!named || samePresenter(it.presenter, me)) return null;
     return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: presenterOf(it), via: 'agent', ...(runsTeam ? { for: named } : {}),
-      box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), ts: it.ts });
+      box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), ...inThread(it), ts: it.ts });
   }
   // The person's comment: for the agent they picked (or @named), else for the team's lead and for every agent outside it.
   let forWho = null;
@@ -57,7 +62,7 @@ export function eventOf(source, it, board, me, crew = { names: [], lead: null },
   else if (inCrew(me) && !isMe(crew.lead)) return null;   // a teammate's own session: the lead takes the unnamed ones
   else forWho = crew.lead;
   return pack(idOf(it.id), it.text, { kind: 'comment', board, comment_id: idOf(it.id), author: it.author || HOME, via: it.via, to: it.to, ...(runsTeam && forWho ? { for: forWho } : {}),
-    box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ts: it.ts });
+    box_id: idOf(on?.id), box_label: on?.label, box_ids: idsOf(on?.ids), area: areaOf(on), tour_id: idOf(on?.tour), step: on?.step, ...inThread(it), ts: it.ts });
 }
 // The JSON an agent gets from `agents-on-whiteboard wait` and board_wait: the event's id, its fields, and the text.
 export const flatEvent = ev => ({ id: ev.id, ...ev.meta, content: ev.content });

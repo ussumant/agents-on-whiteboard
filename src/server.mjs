@@ -205,6 +205,15 @@ export const thread = dir => fs.existsSync(files(dir).thread) ? readSafe(files(d
 // `by` is the presenting session's name: a reply from "Look session" says so in the panel and on the tour card.
 // `replyTo` is the id of the comment it answers: the record pairs them by it, never by the box.
 export const say = (dir, text, on = null, by, replyTo) => append(dir, withPresenter({ kind: 'comment', id: nextId('c'), ts: now(), author: 'claude', text, on, ...(replyTo ? { reply_to: replyTo } : {}) }, by));
+// Comment threads. A reply names the comment it answers (reply_to); the thread is the comment at the end of that chain,
+// its root. An agent answers the id it was handed, which for a person's reply is the reply's own id, so a chain can be
+// several links long. At most 50 links and never the same comment twice, so a hand-edited record can't loop.
+export function threadRoot(items, id) {
+  const byId = new Map(items.filter(x => x && x.kind === 'comment').map(x => [x.id, x]));
+  let at = byId.get(id); const been = new Set();
+  while (at && at.reply_to && byId.has(at.reply_to) && !been.has(at.id) && been.size < 50) { been.add(at.id); at = byId.get(at.reply_to); }
+  return at || null;
+}
 // Presenters: each agent session presents under its own name, set by board_open {presenter} or the CLI's --presenter,
 // never by a page (pages can't write ops). An op without one is Claude's, so older records read as before.
 export const presenterName = n => { const s = String(n ?? '').replace(/[<>"`\n\r\t]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32); return !s || s.toLowerCase() === 'claude' ? 'Claude' : s; };
@@ -954,13 +963,25 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         return send(res, 200, it);
       }
       if (req.method === 'POST' && url.pathname === '/api/comment') {
-        const { text, on: sent, name, to: picked } = await json(req);
+        const { text, on: sent, name, to: picked, reply_to: replyTo } = await json(req);
         if (typeof text !== 'string' || !text.trim()) return send(res, 400, { error: 'empty' });
         if (text.length > 4000) return send(res, 400, { error: 'a comment is at most 4,000 characters' });
         if (recordFull()) return send(res, 413, { error: 'the record is full (10 MB): start a new call' });
         if (linkFull(far)) return send(res, 413, { error: 'the share link has used its half of the record (5 MB)' });
-        const on = cleanOn(sent, known), author = authorOf(name, far), to = addressee(DIR, picked, text);
-        const item = appended(append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(to ? { to } : {}), ...(far ? { via: 'link' } : {}) }), far);
+        // A reply in a thread: reply_to names a comment already in the record (an op, a made-up id or anything not
+        // id-shaped is refused). It pins where the thread's first comment pinned, whatever `on` the page sent, and with
+        // no agent picked and no @Name at its start it goes to whoever the thread was with: the agent the first comment was
+        // for, or the agent who started it. A reply in a thread with Codex doesn't wake every other agent (a paid turn each).
+        // (An agent's board_say can name its box as a bare id; the reply keeps it as {id}, the shape every comment has.)
+        let root = null;
+        if (replyTo !== undefined && replyTo !== null) {
+          const items = thread(DIR);
+          if (typeof replyTo !== 'string' || !ID.test(replyTo) || !items.some(x => x && x.kind === 'comment' && x.id === replyTo)) return send(res, 400, { error: 'reply_to must name a comment in the record' });
+          root = threadRoot(items, replyTo);
+        }
+        const chose = typeof picked === 'string' && picked.trim(), inherit = root && !chose ? (root.author === 'claude' ? presenterOf(root) : root.to) : null;
+        const on = root ? (typeof root.on === 'string' ? { id: root.on } : root.on ?? null) : cleanOn(sent, known), author = authorOf(name, far), to = addressee(DIR, picked, text) || (inherit ? addressee(DIR, inherit, '') : null);
+        const item = appended(append(DIR, { kind: 'comment', id: nextId('c'), ts: now(), author, text: text.trim(), on, ...(to ? { to } : {}), ...(root ? { reply_to: replyTo, thread_id: root.id } : {}), ...(far ? { via: 'link' } : {}) }), far);
         // A comment on a pasted picture names its saved file, so the agent can open the picture it is about.
         const pics = [...new Set([on && on.id, ...((on && on.ids) || [])])].map(id => els.get(id)).filter(e => e && e.type === 'image' && !e.isDeleted).map(e => picOf(e.fileId)).filter(Boolean);
         appendSafe(EVENTS, `COMMENT by ${oneLine(shown(author))}${far ? ' via link' : ''}${to ? ` to ${oneLine(to)}` : ''}${on ? ` [on: ${oneLine(on.label || on.id)}]` : ''}${pics.length ? ` [pictures: ${pics.map(p => `${CALL}/files/` + path.basename(p)).join(', ')}]` : ''}: ${oneLine(item.text)}\n`);

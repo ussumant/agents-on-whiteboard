@@ -348,6 +348,31 @@
     #tourCard { padding: 9px 12px 10px; } .tc-foot { margin-top: 8px; padding-top: 8px; }
     body.touring #chrome { display: none; }   /* on a phone the walk row sits inside the board, over the card's Back/Next */
   }
+  /* Comment threads: the card a pin opens beside it on the board (the thread's first comment and every reply, then a reply
+     box), and the list of agents to tag that @ opens in a comment box. Plain like the panel: its paper, its hard shadow,
+     its dashed rules; messages are rows, not bubbles; agent names in their colour. */
+  #threadCard { position: fixed; left: 0; top: 0; z-index: 1002; width: 300px; box-sizing: border-box; display: none; flex-direction: column;
+    background: #fffdf7; border: 1.5px solid #1e1e1e; border-radius: 10px; box-shadow: 3px 4px 0 rgba(0,0,0,.12);
+    font: 14px/1.45 ui-sans-serif, system-ui, sans-serif; color: #1e1e1e; }
+  #threadCard.show { display: flex; }
+  #thHead { display: flex; align-items: center; gap: 8px; padding: 7px 8px 6px 12px; border-bottom: 1px dashed #c9c4b5; }
+  #thLabel { flex: 1; min-width: 0; font-size: 12px; color: #6a6a72; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #thClose { border: none; background: none; font-size: 19px; line-height: 1; color: #868e96; cursor: pointer; padding: 0 3px; } #thClose:hover { color: #1e1e1e; }
+  #thList { max-height: min(46vh, 380px); overflow-y: auto; padding: 2px 12px; }
+  #thList .tm { padding: 7px 0; }
+  #thList .tm.next { border-top: 1px dashed #c9c4b5; margin-top: 3px; padding-top: 9px; }   /* another thread on the same box */
+  #thList .tmeta { font-size: 11px; color: #6a6a72; } #thList .tmeta b { font-weight: 700; color: #1e1e1e; }
+  #thList .tbody { white-space: pre-wrap; overflow-wrap: anywhere; }
+  #thCompose { display: flex; gap: 6px; align-items: flex-end; padding: 8px 10px 10px; border-top: 1px dashed #c9c4b5; }
+  #thReply { flex: 1; min-width: 0; box-sizing: border-box; height: 36px; font: 14px/1.4 ui-sans-serif, system-ui, sans-serif; border: 1px solid #ced4da; border-radius: 7px; padding: 7px 8px; resize: none; }
+  #thSend { font: 600 13px/1 ui-sans-serif, system-ui, sans-serif; padding: 10px 12px; border-radius: 7px; border: 1px solid #1e1e1e; background: #1e1e1e; color: #fff; cursor: pointer; }
+  #mentions { position: fixed; left: 0; top: 0; z-index: 1003; display: none; min-width: 150px; max-width: 240px; padding: 4px; box-sizing: border-box;
+    background: #fffdf7; border: 1.5px solid #1e1e1e; border-radius: 8px; box-shadow: 3px 4px 0 rgba(0,0,0,.12); }
+  #mentions.show { display: block; }
+  #mentions button { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 6px 8px; border-radius: 5px; cursor: pointer;
+    font: 600 13px/1.2 ui-sans-serif, system-ui, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #mentions button.on, #mentions button:hover { background: #f1f3f5; }
+  .msg .re { font-size: 11px; color: #868e96; margin-bottom: 2px; cursor: pointer; } .msg .re:hover { color: #1971c2; }
 </style>
 </head>
 <body>
@@ -392,6 +417,12 @@
   <div class="tc-foot"><div id="tcDots"></div><button id="tcBack" title="Back (←)">Back</button><button id="tcNext" title="Next (→)">Next</button></div>
   <i id="tcNotch"></i>
 </div>
+<div id="threadCard" role="dialog" aria-label="Comment thread">
+  <div id="thHead"><span id="thLabel"></span><button id="thClose" type="button" title="Close (Esc)">&times;</button></div>
+  <div id="thList"></div>
+  <div id="thCompose"><textarea id="thReply" maxlength="4000" placeholder="Reply… @ to tag an agent" aria-label="Reply in this thread"></textarea><button id="thSend" type="button">Reply</button></div>
+</div>
+<div id="mentions" role="listbox" aria-label="Agents to tag"></div>
 <div id="cptr" class="cptr" aria-hidden="true"><svg width="26" height="31" viewBox="0 0 26 31"><path d="M3 2v22.2l5.9-5.6 4 9 4.2-1.8-4-8.9 8.3-.5z" fill="#7048e8" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"/></svg><svg class="pen" width="32" height="32" viewBox="0 0 32 32"><path d="M24 3l5 5-15 15-6 1 1-6z" fill="#fff" stroke="#1e1e1e" stroke-width="1.6" stroke-linejoin="round"/><path class="cap" d="M24 3l5 5-3 3-5-5z" fill="#7048e8" stroke="#1e1e1e" stroke-width="1.4" stroke-linejoin="round"/><path class="cap" d="M8.6 18.4l5 5L4 28z" fill="#7048e8" stroke="#1e1e1e" stroke-width="1.2" stroke-linejoin="round"/></svg><span class="tag">Claude</span></div>
 <div id="cchat" class="cchat" title="Click to show it all"><b>Claude</b><span class="typed"></span><span class="rest"></span></div>
 <div id="ink"><div class="about" id="inkAbout"></div><textarea id="inkBox" placeholder="Say it here…"></textarea><div class="hint">Enter sends · Esc cancels</div></div>
@@ -901,7 +932,7 @@ const live = (() => {
     let p = pins.get(key);
     if (!p) {
       p = { on, divs: [], el: document.createElement("div") }; p.el.className = "pin"; pins.set(key, p); $("pins").appendChild(p.el);
-      p.el.onclick = () => { show(p.on); const d = p.divs[p.divs.length - 1]; d.scrollIntoView({ block: "nearest" }); d.classList.add("flash"); setTimeout(() => d.classList.remove("flash"), 1500); };
+      p.el.onclick = () => { openThread(p); const d = p.divs[p.divs.length - 1]; d.scrollIntoView({ block: "nearest" }); d.classList.add("flash"); setTimeout(() => d.classList.remove("flash"), 1500); };
       p.el.onmouseenter = () => { if (p.on.rect) p.hover = mark(rectOf(p.on), "old"); };
       p.el.onmouseleave = () => { if (p.hover) p.hover.remove(); p.hover = null; };
     }
@@ -1538,6 +1569,158 @@ const live = (() => {
     });
   }
 
+  /* ---- comment threads, like Figma's ----
+     A reply names the comment it answers (reply_to). Its thread is the comment at the end of that chain, as the server
+     reads it (src/server.mjs, threadRoot): an agent answers the id it was handed, which for a person's reply is the
+     reply's own id, so the page walks the whole chain (at most 50 links, never one comment twice). An older agent reply
+     with no reply_to goes under the latest comment of someone's on the same box before it, as `record` pairs them.
+     A pin holds every thread on its box or area. Clicking it opens a card beside the pin: each thread's first comment and
+     every reply in order, and a reply box that answers the newest thread there. The card follows the board when the
+     camera moves, never covers its pin, closes on Esc or a click outside, and only one is open at a time. @ in the card's
+     reply box or the panel's comment box lists the agents on the board; picking one puts @Name in. All of it is built
+     with DOM calls: names and text are whatever a commenter sent. */
+  const notes = new Map(), rootIds = new Map(), threadItems = new Map();   // id → comment; id → its thread's first id; that id → the thread
+  const TC = { pin: null, root: null };                                   // the open card: its pin, and the thread its reply box answers
+  const M = { open: false, input: null, names: [], at: 0, from: 0 };      // the @ list
+  const whoOf = (it) => it.author === "claude" ? presName(it.presenter) : isMe(it.author) ? "You" : nameOf(it.author);
+  // agents in their pointer's colour (render already made every agent's pointer, in record order), people as in the panel
+  const inkFor = (it) => it.author === "claude" ? ptrOf(it.presenter).ink : isMe(it.author) ? "" : inkOf(nameOf(it.author));
+  function threadOf(item) {
+    let at = item; const been = new Set();
+    while (at.reply_to && notes.has(at.reply_to) && !been.has(at.id) && been.size < 50) { been.add(at.id); at = notes.get(at.reply_to); }
+    if (at === item && item.author === "claude" && !item.reply_to && item.on) {
+      const k = JSON.stringify(item.on), prev = [...notes.values()].reverse().find((c) => c.author !== "claude" && JSON.stringify(c.on) === k);
+      if (prev) at = prev;
+    }
+    return at === item ? item.id : rootIds.get(at.id) || at.id;
+  }
+  // Called by render for every comment, after its pin: the thread it joins, "↳ reply to …" on a reply in the panel, and
+  // the open card redrawn when the comment is in it.
+  function threadAdd(item, div) {
+    const root = threadOf(item);
+    notes.set(item.id, item); rootIds.set(item.id, root); div.__item = item;
+    const list = threadItems.get(root) || []; list.push(item); threadItems.set(root, list);
+    const to = root === item.id ? null : notes.get(item.reply_to) || notes.get(root);
+    if (to) {
+      const re = document.createElement("div"); re.className = "re"; re.textContent = `↳ reply to ${whoOf(to)}`; re.title = "Open the thread";
+      re.onclick = () => { const p = [...pins.values()].find((q) => q.divs.some((d) => d.__item && rootIds.get(d.__item.id) === root)); if (p && TC.pin !== p) openThread(p); };
+      div.prepend(re); div.classList.add("reply");
+    }
+    if (TC.pin && (TC.pin.divs.includes(div) || cardRoots().includes(root))) { drawThread(); placeThread(); }
+  }
+  const cardRoots = () => TC.pin ? [...new Set(TC.pin.divs.map((d) => d.__item && rootIds.get(d.__item.id)).filter(Boolean))] : [];
+  function openThread(p) {
+    if (TC.pin === p) return closeThread();
+    closeMentions(); TC.pin = p; $("thReply").value = "";
+    $("threadCard").classList.add("show"); drawThread(); placeThread();
+    setTimeout(() => { if (TC.pin === p) $("thReply").focus({ preventScroll: true }); }, 0);
+  }
+  function closeThread() { if (!TC.pin) return; closeMentions(); TC.pin = TC.root = null; $("threadCard").classList.remove("show"); $("thList").textContent = ""; }
+  function drawThread() {
+    const p = TC.pin; if (!p) return;
+    const roots = cardRoots(), box = $("thList"); TC.root = roots[roots.length - 1] || null;
+    $("thLabel").textContent = String((p.on && (p.on.label ?? p.on.id)) || "");
+    box.textContent = "";
+    roots.forEach((r, i) => (threadItems.get(r) || []).forEach((it, j) => {
+      const row = document.createElement("div"), meta = document.createElement("div"), b = document.createElement("b"), body = document.createElement("div");
+      row.className = `tm${i && !j ? " next" : ""}`; row.dataset.id = String(it.id); meta.className = "tmeta"; body.className = "tbody";
+      b.textContent = whoOf(it); const ink = inkFor(it); if (ink) b.style.color = ink;
+      meta.append(b, ` · ${new Date(it.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`); if (it.via === "link") meta.append(" · via link");
+      body.textContent = String(it.text ?? ""); row.append(meta, body); box.appendChild(row);
+    }));
+    box.scrollTop = box.scrollHeight;
+  }
+  // Beside the pin: to its right, or its left when there's no room, then kept inside the board top to bottom. When neither
+  // side fits (a phone), under the pin, or over it. Hidden while the pin is off the board or its box is gone.
+  function placeThread() {
+    const c = $("threadCard"), p = TC.pin; if (!p) return;
+    const q = p.el.getBoundingClientRect(), cv = canvasRect(), G = 10, E = 8;
+    if (p.el.style.display === "none" || !q.width || q.right < cv.left || q.left > cv.right || q.bottom < cv.top || q.top > cv.bottom) { c.style.visibility = "hidden"; return; }
+    c.style.visibility = "";
+    const w = c.offsetWidth, h = c.offsetHeight;
+    let x = q.right + G, y = clamp(q.top - 6, cv.top + E, cv.bottom - E - h);
+    if (x + w > cv.right - E) x = q.left - G - w;
+    if (x < cv.left + E) { x = clamp(q.left - w / 2, cv.left + E, cv.right - E - w); y = q.bottom + G + h <= cv.bottom - E ? q.bottom + G : Math.max(cv.top + E, q.top - G - h); }
+    Object.assign(c.style, { left: `${Math.round(x)}px`, top: `${Math.round(y)}px` });
+  }
+  async function sendReply() {
+    const f = $("thReply"), text = f.value.trim(), root = TC.root; if (!text || !root) return;
+    f.value = ""; closeMentions(); $("thSend").disabled = true;
+    try { await post(text, null, root); } catch (e) { f.value = text; setStatus(e.said ? `not sent: ${e.message}` : "not sent: the live server is down"); }
+    $("thSend").disabled = false; if (TC.pin) f.focus({ preventScroll: true });
+  }
+  /* the @ list: the agents on the board (their avatars), or Claude before any has spoken */
+  const tagNames = () => { const l = seenAgents(); return l.length ? l.map((p) => ({ name: p.name, ink: p.ink })) : [{ name: "Claude", ink: CLAUDE_INK }]; };
+  function checkMention(input) {
+    const pos = input.selectionStart, m = input.value.slice(0, pos).match(/(^|\s)@([^\s@]*)$/);
+    const names = m ? tagNames().filter((a) => a.name.toLowerCase().startsWith(m[2].toLowerCase())) : [];
+    if (!names.length) return closeMentions();
+    const same = M.open && M.input === input && M.names.map((a) => a.name).join("\n") === names.map((a) => a.name).join("\n");
+    Object.assign(M, { open: true, input, names, from: pos - m[2].length - 1, at: same ? M.at : 0 });
+    drawMentions();
+  }
+  function drawMentions() {
+    const box = $("mentions"); box.textContent = "";
+    M.names.forEach((a, i) => {
+      const b = document.createElement("button"); b.type = "button"; b.setAttribute("role", "option"); b.className = i === M.at ? "on" : "";
+      b.textContent = a.name; b.style.color = a.ink; b.dataset.name = a.name;
+      b.onmousedown = (e) => e.preventDefault();   // the comment box keeps its focus
+      b.onclick = () => pickMention(a);
+      box.appendChild(b);
+    });
+    box.classList.add("show");
+    const r = M.input.getBoundingClientRect(), h = box.offsetHeight, w = box.offsetWidth;
+    Object.assign(box.style, { left: `${Math.round(clamp(r.left, 6, innerWidth - w - 6))}px`, top: `${Math.round(r.top - h - 4 >= 6 ? r.top - h - 4 : r.bottom + 4)}px` });
+  }
+  function closeMentions() { M.open = false; M.input = null; $("mentions").classList.remove("show"); }
+  function pickMention(a) {
+    const f = M.input; if (!f) return;
+    const end = f.selectionStart, put = `@${a.name} `;
+    f.value = f.value.slice(0, M.from) + put + f.value.slice(end);
+    const at = M.from + put.length; f.setSelectionRange(at, at); closeMentions(); f.focus();
+  }
+  // Keys and clicks for both, caught before anything else on the page: the composer's Enter-to-send, the tour's Esc and the
+  // follow chip's Esc must not see a key the @ list or the card used.
+  window.addEventListener("keydown", (e) => {
+    if (M.open && e.target === M.input && !e.isComposing) {
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { M.at = (M.at + (e.key === "ArrowDown" ? 1 : M.names.length - 1)) % M.names.length; drawMentions(); }
+      else if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") pickMention(M.names[M.at]);
+      else if (e.key === "Escape") closeMentions();
+      else return;
+      e.preventDefault(); e.stopImmediatePropagation(); return;
+    }
+    if (e.key === "Escape" && TC.pin) { e.preventDefault(); e.stopImmediatePropagation(); closeThread(); }
+  }, true);
+  window.addEventListener("pointerdown", (e) => {
+    const t = e.target, inList = $("mentions").contains(t);
+    if (M.open && !inList && t !== M.input) closeMentions();
+    if (TC.pin && !inList && !$("threadCard").contains(t) && t !== TC.pin.el) closeThread();
+  }, true);
+  function wireThreads() {
+    $("thClose").onclick = closeThread; $("thSend").onclick = sendReply;
+    $("thReply").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); sendReply(); } });
+    for (const f of [$("box"), $("thReply")]) {
+      f.addEventListener("input", () => checkMention(f));
+      f.addEventListener("click", () => checkMention(f));
+      f.addEventListener("blur", () => { if (M.input === f) closeMentions(); });
+    }
+    window.addEventListener("resize", () => { placeThread(); if (M.open) drawMentions(); });
+    $("thread").addEventListener("scroll", () => { if (M.open) drawMentions(); }, { passive: true });
+    const rect = (el) => { const q = el.getBoundingClientRect(); return { x: q.left, y: q.top, w: q.width, h: q.height }; };
+    Object.assign(window.__board, {
+      // the open thread card: its rows, where it is and where its pin is (for the gates)
+      threadCard: () => {
+        const c = $("threadCard"), open = !!TC.pin && c.classList.contains("show");
+        return { open, shown: open && c.style.visibility !== "hidden", root: TC.root, label: $("thLabel").textContent, card: open ? rect(c) : null, pin: open ? rect(TC.pin.el) : null,
+          items: [...$("thList").children].map((row) => ({ id: row.dataset.id, who: row.querySelector("b").textContent, ink: row.querySelector("b").style.color, text: row.querySelector(".tbody").textContent })) };
+      },
+      // the pin a comment shows on (its screen rect), and the thread a comment is in
+      pinOf: (id) => { const p = [...pins.values()].find((q) => q.divs.some((d) => d.__item && d.__item.id === id)); return p && p.el.style.display !== "none" ? rect(p.el) : null; },
+      threadOf: (id) => rootIds.get(id) || null,
+      mentions: () => ({ open: M.open, names: M.open ? M.names.map((a) => a.name) : [], at: M.at }),
+    });
+  }
+
   function render(item) {
     const div = document.createElement("div");
     div.className = `msg ${item.author === "claude" ? "claude" : "person"}${item.author === "claude" || isMe(item.author) ? "" : " peer"}`;
@@ -1560,6 +1743,7 @@ const live = (() => {
     }
     div.append(meta, body);
     if (on) addPin(on, item, div);
+    threadAdd(item, div);   // the thread it is in: its card, and "↳ reply to" in the panel
     loopAdd(item);   // a comment on a tour step (or a reply to one) joins that step's feedback loop on the card
     $("thread").appendChild(div); $("thread").scrollTop = $("thread").scrollHeight;
     if (item.author === "claude" && !firstPoll) { div.classList.add("fresh"); setTimeout(() => div.classList.remove("fresh"), 2500); }
@@ -1892,9 +2076,9 @@ const live = (() => {
     polling = false;
     pollTimer = setTimeout(poll, pollAgain ? 0 : Math.min(30000, 1500 * 2 ** pollFails)); pollAgain = false;   // the server is down: 3 s, 6 s, 12 s … 30 s
   }
-  async function post(text, on) {
-    const to = $("toWrap").hidden ? "" : $("to").value;
-    const r = await fetch("/api/comment", { method: "POST", headers: WRITE, body: JSON.stringify({ text, on, name: me, ...(to ? { to } : {}) }) }), it = await r.json();
+  async function post(text, on, replyTo) {
+    const to = (replyTo || $("toWrap").hidden) ? "" : $("to").value;   // a reply goes where its thread went (the server), or to an @Name
+    const r = await fetch("/api/comment", { method: "POST", headers: WRITE, body: JSON.stringify({ text, on, name: me, ...(to ? { to } : {}), ...(replyTo ? { reply_to: replyTo } : {}) }) }), it = await r.json();
     if (!r.ok) throw Object.assign(new Error(it.error || `refused (${r.status})`), { said: true });
     if (!seen.has(it.id)) { seen.add(it.id); render(it); }
   }
@@ -1926,6 +2110,7 @@ const live = (() => {
       window.__board.peers = () => [...peers.values()].map((p) => p.name);
       window.__board.me = () => me;
       penCursor(); areaDrag(); wireTour();
+      wireThreads();
       // following an agent ends with its avatar, the chip's ✕, Esc, or scrolling the board yourself
       $("followChip").querySelector("button").onclick = () => followAgent(null);
       window.addEventListener("keydown", (e) => { if (e.key === "Escape" && followP) followAgent(null); });
@@ -1949,6 +2134,7 @@ const live = (() => {
       if ((sel && !sel.tour ? (sel.ids ? sel.ids.join(",") : sel.id) : undefined) !== key) select(next, boxes);
       placePins(appState); if (ink.rect) placeInk(appState); placePen(appState); placeAgents();
       placeTour(appState); placePointer(appState);
+      placeThread();   // the open thread card stays beside its pin
       queuePush();
     },
     pushScene() { if (onServer && !probe && api && me) pushNow(true); },
