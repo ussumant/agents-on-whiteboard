@@ -137,7 +137,7 @@ try {
   const hl = ev().split("\n").filter((l) => l.startsWith("HISTORY:"));
   ok(hl.length === 1 && !/comment|board|edit/i.test(hl[0]), `8c events.log has one HISTORY line no watcher wakes on (${hl[0]})`);
   const ag = await A.evaluate(() => window.__board.agents().avatars.map((a) => a.name).sort().join());
-  ok(ag === "Ada,Codex", `8d the restore isn't an agent on the board (avatars ${ag})`);
+  ok(ag === "Ada,Codex,Grace,Linus", `8d the restore isn't an agent on the board: the team and Codex only (avatars ${ag})`);
 
   // 9 nothing changes after it: no more versions
   const n9 = (await versions()).length; await sleep(7000);

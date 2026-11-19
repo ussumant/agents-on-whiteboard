@@ -48,8 +48,11 @@ const hatched = (i, w, extra = {}) => ({ ...base, id: `ch${i}`, type: "rectangle
   // the call folder: private, and kept out of git
   const R = scratch("r3-gitignore"); const o = run(R, ["open", "--no-open", "--port", String(PORT)]);
   const call = path.join(R, S.CALL), gi = path.join(call, ".gitignore");
-  const modes = fs.existsSync(call) ? [call, ...fs.readdirSync(call).map((f) => path.join(call, f))].filter((f) => !f.endsWith(".gitignore")).map((f) => (fs.lstatSync(f).mode & 0o777).toString(8)) : [];
-  ok(o.status === 0 && fs.existsSync(gi) && fs.readFileSync(gi, "utf8").trim() === "*" && modes[0] === "700" && modes.slice(1).every((m) => m === "600"), `S2c open keeps the call out of git (.gitignore "*") and readable by this account only (modes ${modes.join(" ")})`);
+  // every folder in it (history/ holds the board's versions) 700, every file 600, all the way down
+  const walk = (d) => [d, ...fs.readdirSync(d).flatMap((f) => { const p = path.join(d, f), st = fs.lstatSync(p); return st.isDirectory() ? walk(p) : [p]; })];
+  const all = fs.existsSync(call) ? walk(call).filter((f) => !f.endsWith(".gitignore")) : [], modes = all.map((f) => (fs.lstatSync(f).mode & 0o777).toString(8));
+  const right = all.every((f) => (fs.lstatSync(f).mode & 0o777).toString(8) === (fs.lstatSync(f).isDirectory() ? "700" : "600"));
+  ok(o.status === 0 && fs.existsSync(gi) && fs.readFileSync(gi, "utf8").trim() === "*" && all.length > 1 && right, `S2c open keeps the call out of git (.gitignore "*") and readable by this account only (modes ${modes.join(" ")})`);
   run(R, ["stop"]);
 }
 
