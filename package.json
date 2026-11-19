@@ -26,7 +26,7 @@
     "url": "https://github.com/ussumant/agents-on-whiteboard/issues"
   },
   "scripts": {
-    "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/security-r2-test.mjs 4928 4929 4930 && node tests/security-r3-test.mjs 4931 4932 4933 && node tests/security-r4-test.mjs 4934 4935 4936 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912 && node tests/stranger-test.mjs 4927 && node tests/draw-test.mjs 4937 && node tests/team-test.mjs 4908 && node tests/threads-test.mjs 4940",
+    "test": "node tests/pack-test.mjs && node tests/plugin-test.mjs && node tests/mcp-test.mjs 4915 && node tests/cli-test.mjs 4919 && node tests/echo-test.mjs 4916 && node tests/wait-test.mjs 4917 4918 && node tests/security-test.mjs 4920 4921 4922 && node tests/security-r2-test.mjs 4928 4929 4930 && node tests/security-r3-test.mjs 4931 4932 4933 && node tests/security-r4-test.mjs 4934 4935 4936 && node tests/xsite-test.mjs 4925 4926 && node tests/open-test.mjs 4913 4914 && node tests/mp-test.mjs 4910 && node tests/tour-test.mjs 4911 && node tests/presenter-test.mjs 4912 && node tests/stranger-test.mjs 4927 && node tests/draw-test.mjs 4937 && node tests/team-test.mjs 4908 && node tests/threads-test.mjs 4940 && node tests/history-test.mjs 4939",
     "test:pack": "node tests/pack-test.mjs",
     "test:plugin": "node tests/plugin-test.mjs",
     "test:mcp": "node tests/mcp-test.mjs 4915",
@@ -46,7 +46,8 @@
     "test:share": "node tests/share-test.mjs 4924",
     "test:draw": "node tests/draw-test.mjs 4937",
     "test:team": "node tests/team-test.mjs 4908",
-    "test:threads": "node tests/threads-test.mjs 4940"
+    "test:threads": "node tests/threads-test.mjs 4940",
+    "test:history": "node tests/history-test.mjs 4939"
   },
   "keywords": [
     "excalidraw",

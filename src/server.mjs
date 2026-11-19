@@ -611,6 +611,73 @@ export function record(dir) {
   return out.join('\n') + '\n';
 }
 
+// Version history, like Figma's: the board as it was, saved on its own as it changes. The call folder's history/ holds
+//   index.jsonl   one line per version, oldest first: {id, ts, kind, label, parts, by, count, bytes}
+//   <id>.json     that version's elements (the ones not deleted), the same shape as scene.json
+// kind is "start" (the board when the server started), "auto" (after changes), "before-restore" (the board just before
+// a restore, so a restore can be undone) or "restore". `parts` say who did what ({who, far, agent, did}); `label` and
+// `by` are the same in the words of the person at this computer ("You changed 3 texts"). The board server writes them;
+// the MCP tool board_history reads them. The person at this computer restores a version from the panel, nobody else.
+// A version is taken once the board has been quiet for 10 s after a change, and at least every 2 minutes while it keeps
+// changing (BOARD_HISTORY_QUIET_MS and BOARD_HISTORY_EVERY_MS change both, for the gates). At most 200 versions and
+// 50 MB: past that the older ones are thinned (historyThin).
+export const HISTORY = { quiet: +process.env.BOARD_HISTORY_QUIET_MS || 10e3, every: +process.env.BOARD_HISTORY_EVERY_MS || 120e3, max: 200, bytes: 50e6, newest: 50 };
+export const VERSION_ID = /^v[a-z0-9]{1,40}$/;
+export const historyFiles = dir => { const h = path.join(files(dir).live, 'history'); return { dir: h, index: path.join(h, 'index.jsonl'), version: id => path.join(h, `${id}.json`) }; };
+export function historyList(dir) {
+  let t; try { t = readSafe(historyFiles(dir).index); } catch { return []; }
+  const out = [];
+  for (const l of t.split('\n')) { if (!l.trim()) continue; try { const v = JSON.parse(l); if (v && typeof v.id === 'string' && VERSION_ID.test(v.id) && typeof v.ts === 'string') out.push(v); } catch { /* a line still being written */ } }
+  return out;
+}
+// One version's elements. The id must be one in the index: it never goes into a path otherwise.
+export function historyElements(dir, id) {
+  if (typeof id !== 'string' || !VERSION_ID.test(id) || !historyList(dir).some(v => v.id === id)) throw Object.assign(new Error(`no version ${String(id).slice(0, 60)} in the history`), { status: 404 });
+  const j = JSON.parse(readSafe(historyFiles(dir).version(id)));
+  return (Array.isArray(j && j.elements) ? j.elements : []).filter(e => e && typeof e === 'object' && typeof e.id === 'string' && !e.isDeleted);
+}
+// Who did it, as the person at this computer reads it ("You", "Alex via link", "Ada") or as an agent does ("Host").
+const partWho = (p, forAgent) => p.agent ? presenterName(p.who) : `${p.who === HOME ? (forAgent ? 'Host' : 'You') : shown(p.who)}${p.far ? ' via link' : ''}`;
+export const historyBy = (parts, forAgent = false) => [...new Set((parts || []).map(p => partWho(p, forAgent)))];
+// An "auto" or "restore" version says what changed; "start" and "before-restore" keep the label they were given.
+export const historyLabel = (v, forAgent = false) => ((v.kind === 'auto' || v.kind === 'restore') && Array.isArray(v.parts) && v.parts.length
+  ? v.parts.map(p => `${partWho(p, forAgent)} ${p.did}`).join(' · ') : String(v.label || ''));
+// A version as an agent gets it from board_history: the person at this computer is "Host" there, as in every event.
+export const historyEntry = v => ({ id: v.id, ts: v.ts, kind: v.kind, label: historyLabel(v, true), by: (Array.isArray(v.by) ? v.by : []).map(b => (b === 'You' ? 'Host' : String(b))), count: v.count });
+// How long until the next version, after a change at `now` when the first change since the last version was at `first`.
+export const historyWait = (first, now) => Math.max(0, Math.min(HISTORY.quiet, first + HISTORY.every - now));
+// Over the cap, versions go from the older part of the list, never the first (the board at the start) or the newest 50:
+// each time the one closest in time to the one before it, so what's left is spread over the whole call.
+export function historyThin(list, max = HISTORY.max, bytes = HISTORY.bytes) {
+  const keep = [...list]; let total = keep.reduce((t, v) => t + (v.bytes || 0), 0);
+  while (keep.length > 2 && (keep.length > max || total > bytes)) {
+    const end = Math.max(2, keep.length - HISTORY.newest); let k = 1, gap = Infinity;
+    for (let i = 1; i < end; i++) { const g = Date.parse(keep[i].ts) - Date.parse(keep[i - 1].ts); if (g < gap) { gap = g; k = i; } }
+    total -= keep[k].bytes || 0; keep.splice(k, 1);
+  }
+  return keep;
+}
+// A version's elements for an agent: each shape with its words and where it sits (a box's title and small line are its
+// words, not shapes of their own), how many of each type, and the file with every field.
+export function historySummary(els, cap = 300) {
+  const live = els.filter(e => !e.isDeleted), types = {}, words = e => flat(e.originalText ?? e.text).trim();
+  for (const e of live) types[e.type] = (types[e.type] || 0) + 1;
+  const shapeGroups = new Set(live.filter(e => e.type !== 'text').map(e => (e.groupIds || [])[0]).filter(Boolean)), said = new Map();
+  const add = (k, t) => { if (t) said.set(k, [...(said.get(k) || []), t]); };
+  for (const e of live) if (e.type === 'text') { if (e.containerId) add(e.containerId, words(e)); else if (shapeGroups.has((e.groupIds || [])[0])) add(`g:${e.groupIds[0]}`, words(e)); }
+  const shownEls = live.filter(e => e.type !== 'text' || (!e.containerId && !shapeGroups.has((e.groupIds || [])[0])));
+  const elements = shownEls.slice(0, cap).map(e => {
+    const t = e.type === 'text' ? words(e) : [...(said.get(e.id) || []), ...(said.get(`g:${(e.groupIds || [])[0]}`) || [])].join(' / ');
+    return { id: e.id, type: e.type, x: Math.round(e.x || 0), y: Math.round(e.y || 0), w: Math.round(e.width || 0), h: Math.round(e.height || 0), ...(t ? { text: t } : {}) };
+  });
+  return { types, elements, ...(shownEls.length > cap ? { more: shownEls.length - cap } : {}) };
+}
+export function historyVersion(dir, id) {
+  const v = historyList(dir).find(x => x.id === id);
+  if (!v) throw new Error(`no version ${String(id).slice(0, 60)} in the history: board_history lists them`);
+  return { ...historyEntry(v), file: historyFiles(dir).version(v.id), ...historySummary(historyElements(dir, v.id)) };
+}
+
 // The board server. Only this computer can reach it (it listens on 127.0.0.1); `share` opens it to teammates.
 export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
   const DIR = path.resolve(dir || '.');
@@ -842,6 +909,161 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
     }
   }
 
+  // ---- Version history (see historyFiles above). A version once the board has been quiet for 10 s after a change, at
+  // least every 2 minutes while it keeps changing, and one when the server starts; none when nothing changed. Compared by
+  // what people see (where things are, their words, colours), never by version numbers: a page that loads the board can
+  // send it back with new versions and nothing else changed.
+  const H = historyFiles(DIR), pad = n => String(n).padStart(2, '0'), hhmm = ts => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  let hist = historyList(DIR).filter(v => fs.existsSync(H.version(v.id))), histBase = new Map(), histTimer = null, histFirst = 0;
+  if (hist.length) try { histBase = new Map(historyElements(DIR, hist.at(-1).id).map(e => [e.id, e])); } catch { /* compared with an empty board */ }
+  const histSig = e => JSON.stringify([e.type, e.containerId ? 0 : Math.round(e.x || 0), e.containerId ? 0 : Math.round(e.y || 0), e.type === 'text' ? 0 : Math.round(e.width || 0),
+    e.type === 'text' ? 0 : Math.round(e.height || 0), e.angle || 0, e.strokeColor, e.backgroundColor, e.fillStyle, e.strokeWidth, e.strokeStyle, e.roughness, e.opacity,
+    e.type === 'text' ? String(e.originalText ?? e.text ?? '') : null, e.fontSize, e.fontFamily, e.textAlign, Array.isArray(e.points) ? e.points.map(p => p.map(Math.round)) : null,
+    e.containerId || null, e.groupIds || [], e.link || null, !!e.locked, e.fileId || null, e.customData || null, e.roundness || null, e.startArrowhead || null, e.endArrowhead || null]);
+  function histDiff() {
+    const cur = new Map([...els.values()].filter(e => !e.isDeleted).map(e => [e.id, e])), added = [], changed = [], removed = [];
+    for (const [id, e] of cur) { const b = histBase.get(id); if (!b) added.push(e); else if (histSig(b) !== histSig(e)) changed.push(e); }
+    for (const [id, b] of histBase) if (!cur.has(id)) removed.push(b);
+    return { added, changed, removed, n: added.length + changed.length + removed.length };
+  }
+  // Who did what since the last version. Pages put the agents' drawing on the board, so `by` names a page for it: an
+  // element an agent's op made (its ref, title, small line, arrow, label), a text that now reads what an agent's edit
+  // wrote, and an element an agent's delete took away since the last version are that agent's. The rest is whoever
+  // last changed it. A box's parts (its group) count as one shape.
+  function histParts({ added, changed, removed }, since) {
+    const made = new Map(), edits = [], dels = [];
+    for (const o of thread(DIR)) if (o && o.kind === 'op') {
+      if (['box', 'area', 'note', 'arrow'].includes(o.op) && typeof o.ref === 'string') for (const s of ['', '__title', '__sub', '__from', '__from__label', '__label']) made.set(o.ref + s, o);
+      else if (o.op === 'edit' && o.target != null) edits.push(o);
+      else if (o.op === 'delete' && o.target != null && o.ts > since) dels.push(o);
+    }
+    const words = e => flat(e && (e.originalText ?? e.text)).trim(), short = t => { t = flat(t).trim(); return t.length > 40 ? `${t.slice(0, 39)}…` : t; }, unit = e => (e.groupIds || [])[0] || e.id;
+    const agents = new Map(), people = new Map();
+    const agent = o => { const k = presenterOf(o).toLowerCase(); if (!agents.has(k)) agents.set(k, { who: presenterOf(o), did: new Map(), edits: new Map() }); return agents.get(k); };
+    const person = id => { const [a, far] = by.get(id) || [HOME, false], k = far ? `link:${a}` : `home:${a}`;
+      if (!people.has(k)) people.set(k, { who: a, far, wrote: [], texts: [], drew: new Set(), pics: 0, moved: new Set(), deleted: new Set() }); return people.get(k); };
+    for (const e of added) {
+      const o = made.get(e.id);
+      if (o) { const a = agent(o); if (!a.did.has(o.id)) a.did.set(o.id, o.op === 'box' ? `drew ${short(o.title)}` : o.op === 'area' ? `drew the area "${short(o.label)}"` : o.op === 'note' ? 'added a note' : `drew an arrow${o.label ? ` "${short(o.label)}"` : ''}`); continue; }
+      const p = person(e.id);
+      if (e.type === 'text') { if (words(e)) p.wrote.push(e); } else if (e.type === 'image') p.pics++; else p.drew.add(unit(e));
+    }
+    for (const e of changed) {
+      const o = e.type === 'text' && edits.findLast(x => { const t = String(x.target); return (e.id === t || e.id === `${t}__title` || e.containerId === t) && flat(x.text).trim() === words(e); });
+      if (o) { agent(o).edits.set(o.id, o); continue; }
+      const p = person(e.id);
+      if (e.type === 'text' && words(e) !== words(histBase.get(e.id))) p.texts.push(e); else p.moved.add(unit(e));
+    }
+    for (const e of removed) {
+      const g = (e.groupIds || [])[0];
+      if (e.type === 'text' && (e.containerId || (g && removed.some(x => x.type !== 'text' && (x.groupIds || [])[0] === g)))) continue;   // it went with its shape
+      const o = dels.findLast(x => { const t = String(x.target); return e.id === t || e.containerId === t || (e.groupIds || []).includes(`${t}__grp`) || e.id === `${t}__from` || e.containerId === `${t}__from`; });
+      if (o) { const a = agent(o); if (!a.did.has(o.id)) { const t = String(o.target), title = histBase.get(`${t}__title`) || [...histBase.values()].find(x => x.type === 'text' && x.containerId === t); a.did.set(o.id, `deleted ${title && words(title) ? short(words(title)) : 'a shape'}`); } continue; }
+      person(e.id).deleted.add(unit(e));
+    }
+    const and = xs => (xs.length > 4 ? and([...xs.slice(0, 3), `${xs.length - 3} more`]) : xs.length < 3 ? xs.join(' and ') : `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}`);
+    const many = (k, one, n) => (k === 1 ? one : n.replace('#', k));
+    const parts = [];
+    for (const a of agents.values()) {
+      const did = [...a.did.values()], ed = [...a.edits.values()];
+      if (ed.length) did.push(ed.length === 1 ? `changed a text to "${short(ed[0].text)}"` : `changed ${ed.length} texts`);
+      parts.push({ who: a.who, agent: true, did: and(did) });
+    }
+    for (const p of people.values()) {
+      const did = [];
+      if (p.wrote.length) did.push(many(p.wrote.length, `wrote "${short(words(p.wrote[0]))}"`, 'wrote # texts'));
+      if (p.texts.length) did.push(many(p.texts.length, `changed a text to "${short(words(p.texts[0]))}"`, 'changed # texts'));
+      if (p.drew.size) did.push(many(p.drew.size, 'drew a shape', 'drew # shapes'));
+      if (p.pics) did.push(many(p.pics, 'added a picture', 'added # pictures'));
+      if (p.moved.size) did.push(many(p.moved.size, 'moved or restyled a shape', 'moved or restyled # shapes'));
+      if (p.deleted.size) did.push(many(p.deleted.size, 'deleted a shape', 'deleted # shapes'));
+      if (did.length) parts.push({ who: p.who, far: p.far, did: and(did) });
+    }
+    return parts;
+  }
+  // The board as it is now, as a version. Its id is new (two versions can land in the same millisecond).
+  function histWrite(kind, parts, label, also = []) {
+    const list = [...els.values()].filter(e => !e.isDeleted), data = JSON.stringify({ elements: list });
+    let id; do id = nextId('v'); while (hist.some(x => x.id === id));
+    mkdirSafe(H.dir); writeSafe(H.version(id), data);
+    const v = { id, ts: now(), kind, label: '', parts, by: [...new Set([...also, ...historyBy(parts)])], count: list.length, bytes: Buffer.byteLength(data) };
+    v.label = label || historyLabel(v) || 'The board changed';
+    appendSafe(H.index, JSON.stringify(v) + '\n');
+    hist.push(v); histBase = new Map(list.map(e => [e.id, e]));
+    const kept = historyThin(hist);
+    if (kept.length < hist.length) {
+      const keep = new Set(kept.map(x => x.id)), gone = hist.filter(x => !keep.has(x.id));
+      hist = kept; writeSafe(H.index, hist.map(x => JSON.stringify(x) + '\n').join(''));
+      for (const g of gone) { const p = H.version(g.id); noLinks(p); try { fs.unlinkSync(p); } catch { /* already gone */ } }
+    }
+    return v;
+  }
+  const histSince = () => (hist.length ? hist.at(-1).ts : '');
+  function histSnap() {
+    clearTimeout(histTimer); histTimer = null; histFirst = 0;
+    const d = histDiff();
+    return d.n ? histWrite('auto', histParts(d, histSince())) : null;
+  }
+  const histSoon = () => { const t = Date.now(); if (!histFirst) histFirst = t; clearTimeout(histTimer); histTimer = setTimeout(safe('history', histSnap), historyWait(histFirst, t)); };
+  safe('history', () => {
+    if (!hist.length) { if ([...els.values()].some(e => !e.isDeleted)) histWrite('start', [], 'The board at the start of the call'); }
+    else if (histDiff().n) histWrite('start', [], 'The board when its server started again');
+  })();
+  // Restore: the board looks like the version again, on every open page, through the same path as a page's change. Each
+  // element of the version comes back with a version above the board's (so it wins everywhere) and `updated` now (so a
+  // page replaying the record doesn't put an older agent edit or delete back over it); everything else on the board is
+  // deleted the same way. Every element goes through the same checks as a page's scene write. The board just before is
+  // saved as a version first, so a restore can be undone by restoring that one.
+  const vOf = e => (e && Number.isInteger(e.version) ? e.version : 0), plainOf = ({ version, versionNonce, updated, ...rest }) => JSON.stringify(rest);
+  function histRestore(id) {
+    const v = hist.find(x => x.id === id);
+    if (!v) throw fail(404, `no version ${String(id).slice(0, 60)} in the history`);
+    const list = historyElements(DIR, v.id), at = hhmm(v.ts);
+    // Text someone typed in the last 2.5 s reaches the record as theirs first.
+    if (diffTimer) { clearTimeout(diffTimer); diffTimer = null; safe('text check', diffTexts)(); }
+    clearTimeout(histTimer); histTimer = null; histFirst = 0;
+    const d = histDiff(), before = histWrite('before-restore', d.n ? histParts(d, histSince()) : [], `Before restoring the ${at} version`, ['You']);
+    const want = new Map(list.map(e => [e.id, e])), t = Date.now(), nonce = () => crypto.randomInt(1, 2 ** 31), out = [];
+    for (const e of list) {
+      const cur = els.get(e.id);
+      if (cur && !cur.isDeleted && plainOf(cur) === plainOf({ ...e, isDeleted: cur.isDeleted })) continue;   // already as it was
+      out.push({ ...e, isDeleted: false, version: Math.max(vOf(e), vOf(cur)) + 1, versionNonce: nonce(), updated: t });
+    }
+    for (const e of els.values()) if (!e.isDeleted && !want.has(e.id)) out.push({ ...e, isDeleted: true, version: vOf(e) + 1, versionNonce: nonce(), updated: t });
+    const room = roomFor(), took = []; let bytes = 0;
+    for (const e of out) {
+      if (!okElement(e, known) || !newer(e, els.get(e.id))) continue;
+      const c = cleanElement(e), size = JSON.stringify(c).length;
+      if (size > ELEMENT_MAX(c) || !room(c.id, size, false)) continue;
+      put(c, size); by.set(c.id, [HOME, false]); took.push(c); bytes += size;
+    }
+    // Its words are nobody writing: no BOARD line, no canvas event, so no agent hears a restore as the person typing.
+    lastTexts = textsOf([...els.values()]);
+    if (took.length) { broadcast('elements', { elements: took }, null, bytes); saveSoon(); }
+    // Restoring the board as it was just before a restore is undoing that restore, and says so.
+    const after = histWrite('restore', [{ who: HOME, far: false, did: v.kind === 'before-restore' ? 'undid the restore' : `restored the ${at} version` }]);
+    // In the record, so agents can learn of it (board_thread, board_history); its own kind, so no page reads it as an
+    // agent's op and no agent is woken by it. events.log gets a line no watcher wakes on.
+    append(DIR, { kind: 'history', action: 'restore', id: nextId('h'), ts: now(), author: HOME, version: v.id, version_ts: v.ts, version_label: historyLabel(v, true), ...(v.kind === 'before-restore' ? { undo: true } : {}), before: before.id, after: after.id, took: took.length });
+    appendSafe(EVENTS, `HISTORY: ${quiet(v.kind === 'before-restore' ? 'Host undid a restore' : `Host restored the ${at} version`)} (${v.id}; the version just before it is ${before.id})\n`);
+    return { ok: true, restored: v.id, before: before.id, after: after.id, took: took.length };
+  }
+  // Save a copy: the version as an .excalidraw file, its pictures inside, to open anywhere (excalidraw.com, Obsidian).
+  function histCopy(id) {
+    const v = hist.find(x => x.id === id);
+    if (!v) throw fail(404, `no version ${String(id).slice(0, 60)} in the history`);
+    const list = historyElements(DIR, v.id), pics = {};
+    for (const e of list) if (e.type === 'image' && typeof e.fileId === 'string' && !pics[e.fileId]) {
+      const p = picOf(e.fileId); if (!p) continue;
+      const ext = path.extname(p).slice(1), type = Object.keys(PIC_EXT).find(k => PIC_EXT[k] === ext);
+      try { pics[e.fileId] = { id: e.fileId, mimeType: `image/${type}`, dataURL: `data:image/${type};base64,${readSafe(p, null).toString('base64')}`, created: fs.statSync(p).mtimeMs }; } catch { /* gone */ }
+    }
+    const d = new Date(v.ts), name = `${BOARD.name}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.excalidraw`;
+    const disposition = `attachment; filename="${name.replace(/[^\w.-]+/g, '-')}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
+    return { disposition, file: JSON.stringify({ type: 'excalidraw', version: 2, source: NAME, elements: list, appState: { viewBackgroundColor: '#ffffff', gridSize: null }, files: pics }) };
+  }
+  const histMeta = ({ parts, bytes, ...v }) => v;
+
   // The door. This computer (Host: localhost) walks in. Anyone else arrives through `share`'s tunnel, so their Host is the
   // tunnel's name (and Cloudflare adds cf-connecting-ip): they need the key from share.json, which exists only while
   // `share` runs. The link carries it once as ?k=; the page then keeps it as a cookie and drops it from the address bar.
@@ -1008,7 +1230,7 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
           if (size > ELEMENT_MAX(c) || !room(c.id, size, far)) continue;
           put(c, size, far); by.set(c.id, who); took.push(c); bytes += size;
         }
-        if (took.length) { broadcast('elements', { elements: took }, scene.c, bytes); saveSoon(); diffSoon(); }
+        if (took.length) { broadcast('elements', { elements: took }, scene.c, bytes); saveSoon(); diffSoon(); histSoon(); }
         return send(res, 200, { ok: true, took: took.length });
       }
       if (req.method === 'GET' && url.pathname === '/api/changes') {
@@ -1036,6 +1258,26 @@ export function serve({ dir, port = DEFAULT_PORT, seed } = {}) {
         const selected = Object.fromEntries(Object.keys(p.selected && typeof p.selected === 'object' ? p.selected : {}).filter(k => ID.test(k)).slice(0, 500).map(k => [k, true]));
         if (c) broadcast('presence', { id: p.c, name: c.name, pointer, button: p.button === 'down' ? 'down' : 'up', selected }, p.c);
         return send(res, 200, { ok: true });
+      }
+      // The board's history: only the person at this computer lists, previews, copies or restores a version. A restore is a
+      // write like any other (this board's page, its key and its page secret), and never through the share link.
+      if (url.pathname === '/api/history' || url.pathname.startsWith('/api/history/')) {
+        if (far) return send(res, 403, { error: 'the board\'s history is only for the person at this computer' });
+        if (req.method === 'GET' && url.pathname === '/api/history') return send(res, 200, { versions: [...hist].reverse().map(histMeta) });
+        if (req.method === 'POST' && url.pathname === '/api/history/restore') {
+          const b = await json(req);
+          if (notMine(b.c)) return;
+          try { return send(res, 200, histRestore(String(b.id ?? ''))); } catch (e) { return send(res, e.status || 400, { error: e.message }); }
+        }
+        const m = req.method === 'GET' && url.pathname.match(/^\/api\/history\/(v[a-z0-9]{1,40})(\/excalidraw)?$/);
+        if (m) {
+          try {
+            if (m[2]) { const { disposition, file } = histCopy(m[1]); return send(res, 200, file, 'application/vnd.excalidraw+json', { 'content-disposition': disposition }); }
+            const v = hist.find(x => x.id === m[1]);
+            if (!v) return send(res, 404, { error: `no version ${m[1]} in the history` });
+            return send(res, 200, { ...histMeta(v), elements: historyElements(DIR, v.id) });
+          } catch (e) { return send(res, e.status || 500, { error: e.message }); }
+        }
       }
       send(res, 404, { error: 'not found' });
     } catch (e) { if (!e.status) console.error('ERROR', e.message); if (!res.headersSent) send(res, e.status || 500, { error: e.message }, 'application/json', e.status === 413 ? { connection: 'close' } : e.status === 429 ? { connection: 'close', 'retry-after': '2' } : {}); }

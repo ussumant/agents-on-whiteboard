@@ -374,6 +374,30 @@
   #mentions button.on, #mentions button:hover { background: #f1f3f5; }
   .msg .re { font-size: 11px; color: #868e96; margin-bottom: 2px; cursor: pointer; } .msg .re:hover { color: #1971c2; }
 </style>
+<style>
+  /* Version history (the script at the end of the page): a History button beside "hide", and the list of versions over the
+     discussion while it is open. Only on this computer's page. */
+  #historyBtn { font: 600 12px/1 ui-sans-serif, system-ui, sans-serif; padding: 6px 9px; border-radius: 6px; border: 1px solid #d3d3d8; background: #fff; color: #1e1e1e; cursor: pointer; }
+  #historyBtn.on { background: #1e1e1e; border-color: #1e1e1e; color: #fff; }
+  body.history-open #thread, body.history-open #compose, body.history-open #tourBox { display: none; }
+  #history { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; display: flex; flex-direction: column; }
+  #history[hidden] { display: none; }
+  #histNote { font-size: 12px; color: #6a6a72; padding: 2px 0 9px; border-bottom: 1px dashed #c9c4b5; }
+  #histList { display: flex; flex-direction: column; }
+  #histList .empty { font-size: 13px; color: #868e96; padding: 12px 0; }
+  .hv { padding: 9px 0 10px; border-bottom: 1px dashed #c9c4b5; }
+  .hv-top { display: flex; gap: 8px; align-items: baseline; font-size: 12px; color: #6a6a72; }
+  .hv-top b { color: #1e1e1e; font-size: 13px; white-space: nowrap; }
+  .hv-who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hv-label { font-size: 13px; margin: 3px 0 5px; overflow-wrap: anywhere; }
+  .hv-act { display: flex; gap: 14px; align-items: baseline; }
+  .hv-act .link[data-act="restore"] { color: #1e1e1e; }
+  .hv-act .link.sure { color: #c92a2a; font-weight: 600; }
+  .hv-pic { margin-top: 7px; border: 1px solid #d3d3d8; border-radius: 6px; background: #fff; padding: 4px; font-size: 12px; color: #868e96; }
+  .hv-pic[hidden] { display: none; }
+  .hv-pic canvas { display: block; width: 100%; height: auto; max-height: 220px; object-fit: contain; }
+  .histline { align-self: center; font-size: 12px; color: #6a6a72; text-align: center; padding: 0 8px; }
+</style>
 </head>
 <body>
 <div id="root"></div>
@@ -2070,6 +2094,7 @@ const live = (() => {
         if (it.kind === "comment") render(it);
         else if (it.kind === "op") { try { applyOp(it); } catch (e) { console.error("[live] op failed", e, it); } }
         else if (it.kind === "team") { try { teamOp(it); } catch (e) { console.error("[live] team failed", e, it); } }
+        else if (it.kind === "history" && window.__historyLine) window.__historyLine(it);   // a restore: one line in the discussion
       }
       firstPoll = false;
     } catch (e) { pollFails++; $("dot").className = "dot off"; $("conn").textContent = stale ? STALE : "reconnecting…"; }
@@ -2369,6 +2394,119 @@ function whenFontsReady(ms) {
 whenFontsReady(3500).then(start).catch((e) => {
   fail("The board hit an error while loading.", "start failed: " + ((e && e.message) || String(e)), e && e.stack ? e.stack : null);
 });
+</script>
+<script>
+/* Version history, like Figma's. The board server saves a version on its own as the board changes (src/server.mjs,
+   historyFiles). On this computer's page, History beside "hide" opens the list over the discussion, newest first: when,
+   what changed and who. Preview draws a version small; Restore makes the board look like it for everyone, live (the board
+   just before is saved as a version first, so a restore can be undone); Save a copy downloads it as an .excalidraw file.
+   A page on the share link has no History button, and the server refuses it anyway. */
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const INFO = window.__boardInfo || {};
+  const atHome = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  const onServer = location.protocol.startsWith("http") && !/[?&]probe/.test(location.search);
+  const WRITE = { "content-type": "application/json", "x-agents-on-whiteboard-key": String(INFO.token || ""), "x-agents-on-whiteboard-page": String(INFO.pageKey || "") };
+  // 24-hour, as the server writes times into labels ("Before restoring the 14:03 version")
+  const clock = (ts) => {
+    const d = new Date(ts), t = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    return d.toDateString() === new Date().toDateString() ? t : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${t}`;
+  };
+  // A restore in the record: one quiet line in the discussion, on every page (guests too).
+  window.__historyLine = (it) => {
+    if (!it || it.action !== "restore") return;
+    const div = document.createElement("div"); div.className = "histline";
+    div.textContent = `${it.author === "you" && atHome ? "You" : "Host"} ${it.undo ? "undid the last restore" : `restored the board to the ${clock(it.version_ts)} version`}`;
+    $("thread").appendChild(div); $("thread").scrollTop = $("thread").scrollHeight;
+    if (open) refresh();
+  };
+  let open = false, timer = null, versions = [], drawn = "";
+  window.__board.history = () => ({ button: !!$("historyBtn"), open, rows: [...document.querySelectorAll("#histList .hv")].map((r) => ({ id: r.dataset.id,
+    time: r.querySelector(".hv-top b").textContent, who: r.querySelector(".hv-who").textContent, label: r.querySelector(".hv-label").textContent, preview: !!r.querySelector(".hv-pic canvas") })) });
+  if (!atHome || !onServer) return;
+
+  const btn = document.createElement("button");
+  btn.id = "historyBtn"; btn.type = "button"; btn.textContent = "History"; btn.title = "Versions of this board: preview one, restore it, or save a copy";
+  btn.setAttribute("aria-pressed", "false");
+  $("panelHead").insertBefore(btn, $("panelToggle"));
+  const box = document.createElement("div"); box.id = "history"; box.hidden = true;
+  const note = document.createElement("div"); note.id = "histNote";
+  note.textContent = "The board saves a version on its own as it changes. Restore puts one back for everyone; the board as it was is saved first, so you can undo it.";
+  const list = document.createElement("div"); list.id = "histList";
+  box.append(note, list);
+  $("panel").insertBefore(box, $("thread"));
+
+  function toggle(on) {
+    open = on; box.hidden = !on; document.body.classList.toggle("history-open", on);
+    btn.classList.toggle("on", on); btn.setAttribute("aria-pressed", String(on));
+    clearInterval(timer); timer = null;
+    if (on) { drawn = ""; refresh(); timer = setInterval(refresh, 5000); }
+  }
+  btn.onclick = () => toggle(!open);
+  async function refresh() {
+    try {
+      const r = await fetch("/api/history", { cache: "no-store" }), j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      versions = j.versions || [];
+      const key = versions.map((v) => v.id).join(",");
+      if (key !== drawn) { drawn = key; draw(); }
+    } catch (e) { list.textContent = ""; const p = document.createElement("div"); p.className = "empty"; p.textContent = `The history didn't load: ${e.message}`; list.append(p); drawn = ""; }
+  }
+  // Built from DOM calls, never an HTML string: a label carries the words people and agents put on the board.
+  function draw() {
+    list.textContent = "";
+    if (!versions.length) { const p = document.createElement("div"); p.className = "empty"; p.textContent = "No versions yet. The board saves one 10 s after it changes."; list.append(p); return; }
+    versions.forEach((v, i) => {
+      const row = document.createElement("div"); row.className = "hv"; row.dataset.id = v.id;
+      const top = document.createElement("div"); top.className = "hv-top";
+      const time = document.createElement("b"); time.textContent = clock(v.ts); time.title = new Date(v.ts).toLocaleString();
+      const who = document.createElement("span"); who.className = "hv-who"; who.textContent = (v.by || []).join(", ");
+      top.append(time, who);
+      if (i === 0) { const latest = document.createElement("span"); latest.textContent = "latest"; top.append(latest); }
+      const label = document.createElement("div"); label.className = "hv-label"; label.textContent = v.label;
+      const act = document.createElement("div"); act.className = "hv-act";
+      const pic = document.createElement("div"); pic.className = "hv-pic"; pic.hidden = true;
+      const add = (name, text, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "link"; b.dataset.act = name; b.textContent = text; b.title = title; b.onclick = () => fn(b); act.append(b); };
+      add("preview", "Preview", "Draw this version small, here", () => preview(v, pic));
+      add("restore", "Restore", "Make the board look like this version, for everyone", (b) => restore(v, b));
+      add("copy", "Save a copy", "Download this version as an .excalidraw file", () => saveCopy(v));
+      row.append(top, label, act, pic);
+      list.append(row);
+    });
+  }
+  async function preview(v, pic) {
+    if (!pic.hidden) { pic.hidden = true; return; }
+    pic.hidden = false; pic.textContent = "drawing…";
+    try {
+      const r = await fetch(`/api/history/${encodeURIComponent(v.id)}`, { cache: "no-store" }), j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      // A canvas, drawn with the fonts this page already has (an SVG export fetches them again, from a path the CDN refuses).
+      const api = window.__excalidrawAPI, els = typeof live !== "undefined" ? live.restored(j.elements) : j.elements;
+      const cv = await ExcalidrawLib.exportToCanvas({ elements: els, appState: { exportBackground: true, viewBackgroundColor: "#ffffff" }, files: api ? api.getFiles() : null, exportPadding: 16, maxWidthOrHeight: 640 });
+      pic.textContent = ""; pic.append(cv);
+    } catch (e) { pic.textContent = `No preview: ${e.message}`; }
+  }
+  // Restore asks once more on the button itself (no dialog): a second press within 4 s restores.
+  async function restore(v, b) {
+    if (!b.classList.contains("sure")) {
+      b.classList.add("sure"); b.textContent = "Restore for everyone?";
+      setTimeout(() => { if (b.isConnected && b.classList.contains("sure")) { b.classList.remove("sure"); b.textContent = "Restore"; } }, 4000);
+      return;
+    }
+    b.disabled = true; b.textContent = "restoring…";
+    try {
+      const r = await fetch("/api/history/restore", { method: "POST", headers: WRITE, body: JSON.stringify({ id: v.id, c: String(INFO.page || "") }) }), j = await r.json();
+      if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+      setStatus(`restored the ${clock(v.ts)} version. To undo it, restore "Before restoring…"`);
+      drawn = ""; refresh();
+    } catch (e) { b.disabled = false; b.classList.remove("sure"); b.textContent = "Restore"; setStatus(`not restored: ${e.message}`); }
+  }
+  // The server names the file (the board's name and the version's time) and puts the pictures inside it.
+  function saveCopy(v) {
+    const a = document.createElement("a"); a.href = `/api/history/${encodeURIComponent(v.id)}/excalidraw`; a.download = "";
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+})();
 </script>
 </body>
 </html>
