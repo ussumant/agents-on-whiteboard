@@ -14,6 +14,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { say, op, thread, files, tour, tourStep, point, tourWhere, presenterName, seedFile, startBoard, withPresenter, DRAW_COLORS, SIDES, DEFAULT_PORT, NAME } from './server.mjs';
 import { follow, flatEvent } from './follow.mjs';
+import { historyList, historyEntry, historyVersion } from './server.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version;
@@ -151,6 +152,18 @@ export function runMcp({ channels = false } = {}) {
         const items = thread(dirOf(a)), i = a.since ? items.findIndex(x => x.id === a.since) : -1;
         return i >= 0 ? items.slice(i + 1) : a.since ? items.filter(x => x.ts > a.since) : items;
       }],
+    // Read-only: the person restores a version from the panel; an agent only reads them.
+    ['board_history', 'The board\'s saved versions, newest first: when, what changed and who ("Ada drew 🔁 Retry worker", "Host changed 3 texts"). The board saves one on its own once it has been quiet for 10 s after a change, at least every 2 minutes while it keeps changing, and one just before and after each restore. '
+      + 'With `id`, that one version: each shape with its words and where it sat (x, y, w, h), how many of each type, and `file`, the version\'s full JSON. Use it to reuse a past state in the conversation, e.g. redraw a box that was deleted. '
+      + 'Read-only: only the person restores a version (History in the panel); if they want the board back as it was, tell them which version.',
+      { id: { ...s, description: 'a version id from the list' }, limit: { ...n, description: 'how many versions, newest first: 1 to 200, default 30' }, ...dirArg }, [], a => {
+        const d = dirOf(a);
+        if (a.id != null) return historyVersion(d, String(a.id));
+        const lim = a.limit ?? 30;
+        if (!Number.isInteger(lim) || lim < 1 || lim > 200) throw new Error('limit is a whole number from 1 to 200');
+        const all = historyList(d);
+        return { total: all.length, versions: all.slice(-lim).reverse().map(historyEntry) };
+      }],
   ].map(([name, description, properties, required, run]) => ({ name, description, inputSchema: { type: 'object', properties, required }, run }));
 
   const instructions = [
@@ -164,6 +177,7 @@ export function runMcp({ channels = false } = {}) {
     'Other agents may share this board, each under its own name. A comment the person sends to one agent (picked in the page, or starting with @Name) reaches only that agent; a comment with no name reaches every agent. Another agent\'s reply reaches you only when it names you with @, as a comment with via "agent": answer it like any comment. Name another agent only to hand them something.',
     'Draw as the discussion goes, while the person watches: when an idea settles, put it on the board with board_box (a new box next to one you name, with `near` and `side`, and `from` for its arrow), board_area (a labelled frame around some boxes), board_arrow and board_note. Your marker draws each one in front of them, in your colour. board_focus {target: "all"} shows the whole board.',
     `If another session presents on the same board, pass board_open a distinct \`presenter\` name: it is what your pointer, the tour card and your replies say. A step with \`ask: {question}\` shows ✓ keep / ✎ change on the card; the pick ${channels ? `arrives as <channel source="${NAME}" kind="answer" answer_id=... step=... pick=...>` : 'shows in board_thread as an op "answer"'}. Answer it with board_say reply_to=<its id>, so your reply shows on that step's card. Feedback typed on the card arrives as a normal comment with tour_id and step; reply the same way.`,
+    'The board keeps its own version history. board_history lists the versions (newest first: when, what changed, who); board_history {id} gives one version\'s shapes and words, so you can reuse a past state. Only the person restores a version, from History in the panel; a restore shows in board_thread as a "history" item.',
   ].join('\n');
 
   readline.createInterface({ input: process.stdin }).on('line', async line => {
