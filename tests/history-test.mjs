@@ -114,8 +114,11 @@ try {
     && els.find((e) => e.id === "db__title").text === "🗄️ Orders database" && els.find((e) => e.id === "queue__title").text === "📬 Orders in";
   const conv = await Promise.all([A, B].map((p) => poll(async () => same(await live(p)), 8000)));
   ok(conv.every((t) => t >= 0), `6a both open pages look like the ${v1.id} version, no reload (${conv.join(" ms, ")} ms; ${want.length} elements)`);
-  const lines = await Promise.all([A, B].map((p) => p.evaluate(() => [...document.querySelectorAll("#thread .histline")].map((d) => d.textContent))));
-  ok(/^You restored the board to the \d\d:\d\d version$/.test(lines[0].at(-1) || "") && lines[1].length === 1, `6b the discussion says so on every page (${JSON.stringify(lines)})`);
+  // (the line comes with the page's next read of the record, up to 1.5 s after the elements)
+  const histLines = (p) => p.evaluate(() => [...document.querySelectorAll("#thread .histline")].map((d) => d.textContent));
+  await Promise.all([A, B].map((p) => poll(async () => (await histLines(p)).length === 1, 6000)));
+  const lines = await Promise.all([A, B].map(histLines));
+  ok(lines.every((l) => l.length === 1 && /^You restored the board to the \d\d:\d\d version$/.test(l[0])), `6b the discussion says so on every page (${JSON.stringify(lines)})`);
   const sc = (await (await fetch(`${U}/api/scene`)).json()).elements.filter((e) => !e.isDeleted);
   ok(same(sc), "6c the server's board is the version too");
 
@@ -145,7 +148,8 @@ try {
   await uiRestore(A, vBefore.id);
   const undone = await Promise.all([A, B].map((p) => poll(async () => { const e = await live(p); return has(e, "retry") && has(e, "n1") && e.find((x) => x.id === "db__title").text === "🗄️ Orders DB" && e.find((x) => x.id === "api__title").text === "🧾 Order API v2"; }, 8000)));
   const v10 = await waitFor(/^You undid the restore$/, before10, 5000);
-  const l10 = await B.evaluate(() => [...document.querySelectorAll("#thread .histline")].map((d) => d.textContent).at(-1));
+  await poll(async () => (await histLines(B)).at(-1) === "You undid the last restore", 6000);
+  const l10 = (await histLines(B)).at(-1);
   ok(undone.every((t) => t >= 0) && v10 && l10 === "You undid the last restore", `10 restoring "Before restoring…" undoes it on both pages, and says so (${undone.join(" ms, ")} ms; "${v10 && v10.label}"; "${l10}")`);
 
   // 11 a guest on the share link: no history, no restore, and the board doesn't change
@@ -159,6 +163,11 @@ try {
   await sleep(500);
   ok(only(g1) && only(g2) && only(g3) && JSON.stringify((await (await fetch(`${U}/api/scene`)).json()).elements) === scene0,
     `11a a link guest gets 403 on restore, on the list and on a copy, and the board is unchanged (${g1.status} ${g1.body.slice(0, 70)} | ${g2.status} | ${g3.status})`);
+  // a guest's own edit is still a version, and says it came through the link
+  const before11 = (await versions()).map((v) => v.id), sub = (await (await fetch(`${U}/api/scene`)).json()).elements.find((e) => e.id === "courier__sub");
+  const g4 = await hit(PORT, "/api/scene", { method: "POST", host: TUNNEL, headers: gHead, body: { c: gb.page, name: "Alex", elements: [{ ...sub, text: "pings twice", originalText: "pings twice", version: sub.version + 1 }] } });
+  const v11 = await waitFor(/pings twice/, before11, 10000);
+  ok(g4.status === 200 && v11 && v11.label === 'Alex via link changed a text to "pings twice"' && v11.by.includes("Alex via link"), `11b a link guest's edit is a version that says so ("${v11 && v11.label}" by ${JSON.stringify(v11 && v11.by)})`);
   fs.unlinkSync(S.files(D).share);
   const info = await A.evaluate(() => window.__boardInfo);
   const homePost = (body, secret) => fetch(`${U}/api/history/restore`, { method: "POST", headers: { "content-type": "application/json", "x-agents-on-whiteboard-key": info.token, origin: U, ...(secret ? { "x-agents-on-whiteboard-page": secret } : {}) }, body: JSON.stringify(body) });
@@ -175,6 +184,15 @@ try {
   ok(loaded === vBox.count, `12b Excalidraw itself opens it (${loaded} elements)`);
   const copyBtn = await A.evaluate((id) => !!document.querySelector(`#histList .hv[data-id="${id}"] button[data-act="copy"]`), vBox.id);
   ok(copyBtn, "12c every version in the list has Save a copy");
+  // a picture on the board goes inside the copy, so the file opens anywhere with it
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", page = { "content-type": "application/json", "x-agents-on-whiteboard-key": info.token, "x-agents-on-whiteboard-page": info.pageKey, origin: U };
+  const pf = await fetch(`${U}/api/files`, { method: "POST", headers: page, body: JSON.stringify({ c: info.page, files: [{ id: "pic-1", mimeType: "image/png", dataURL: `data:image/png;base64,${PNG}` }] }) }).then((r) => r.json());
+  const before12 = (await versions()).map((v) => v.id);
+  const img = { id: "img1", type: "image", fileId: "pic-1", status: "saved", scale: [1, 1], x: 1200, y: 600, width: 80, height: 80, angle: 0, strokeColor: "transparent", backgroundColor: "transparent", fillStyle: "solid", strokeWidth: 1, strokeStyle: "solid", roughness: 1, opacity: 100, groupIds: [], seed: 1, version: 1, versionNonce: 7, isDeleted: false, boundElements: null, updated: Date.now(), link: null, locked: false };
+  await fetch(`${U}/api/scene`, { method: "POST", headers: page, body: JSON.stringify({ c: info.page, elements: [img] }) });
+  const v12 = await waitFor(/added a picture/, before12, 10000);
+  const pic = v12 && JSON.parse(await (await fetch(`${U}/api/history/${v12.id}/excalidraw`)).text()).files["pic-1"];
+  ok(pf.took && pf.took.includes("pic-1") && v12 && pic && pic.dataURL === `data:image/png;base64,${PNG}` && pic.mimeType === "image/png", `12d a picture on the board is inside the copy ("${v12 && v12.label}"; ${pic ? pic.dataURL.slice(0, 30) : "no picture"})`);
 
   // 13 the list in the panel: newest first, time, who and what; Preview draws a version small
   await poll(async () => (await A.evaluate(() => window.__board.history().rows.map((r) => r.id).join())) === (await versions()).map((v) => v.id).join(), 8000);
